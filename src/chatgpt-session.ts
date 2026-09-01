@@ -137,7 +137,15 @@ export async function detectChatGptAccountCapabilities(
         slider.waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal })
           .then(() => "slider" as const),
       ]);
-      const sliderVisible = ready === "slider" || await slider.isVisible().catch(() => false);
+      let sliderVisible = ready === "slider" || await slider.isVisible().catch(() => false);
+      if (!sliderVisible && ready === "items") {
+        // The current ChatGPT picker renders the GPT model rows a little before it hydrates the
+        // reasoning-effort slider. Give that authoritative control a short grace window before
+        // falling back to counting legacy menu rows, otherwise Pro is persisted as unavailable.
+        sliderVisible = await slider.waitFor({ state: "visible", timeout: 1_000 })
+          .then(() => true)
+          .catch(() => false);
+      }
       if (!sliderVisible) {
         return { solAvailable: true, proAvailable: await efforts.count() >= 5 };
       }
