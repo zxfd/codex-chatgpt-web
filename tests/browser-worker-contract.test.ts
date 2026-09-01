@@ -728,9 +728,18 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
   const calls: Array<[string, string?]> = [];
   let connectorSelected = false;
   const appResult = {
-    waitFor: async () => { calls.push(["waitForResult"]); },
-    count: async () => 1,
     getAttribute: async (name: string) => name === "data-highlighted" ? "" : null,
+  };
+  const visibleRows = {
+    allInnerTexts: async () => [
+      "Codex Native2\nCodex Native2",
+      "Codex Native\nCodex Native2",
+    ],
+    count: async () => 2,
+    nth: (index: number) => {
+      expect(index).toBe(0);
+      return appResult;
+    },
   };
   const selectedConnector = {
     waitFor: async () => {
@@ -765,18 +774,13 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
   };
   const page = {
     getByRole: personalizedTemporaryChatRole,
-    getByText: (text: string, options: { exact: boolean }) => {
-      expect(text).toBe("Codex Native2");
-      expect(options).toEqual({ exact: true });
-      return { exactConnectorLabel: true };
-    },
     locator: (selector: string) => {
       if (selector.includes("__menu-item")) {
         return {
           evaluateAll: async () => [],
-          filter: (options: { has: unknown }) => {
-            expect(options).toEqual({ has: { exactConnectorLabel: true } });
-            return appResult;
+          filter: (options: { visible?: boolean }) => {
+            expect(options).toEqual({ visible: true });
+            return visibleRows;
           },
         };
       }
@@ -805,7 +809,6 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
     ["fill", ""],
     ["focus"],
     ["pressSequentially", "@codex"],
-    ["waitForResult"],
     ["press"],
     ["waitForSelectedConnector"],
   ]);
@@ -817,15 +820,22 @@ test("connector selection moves highlight to the exact hidden-viewport row befor
   let selected = false;
   const selectedConnector = { waitFor: async () => {} };
   const appResult = {
-    waitFor: async () => {},
-    count: async () => 1,
     getAttribute: async () => arrowCount >= 2 ? "" : null,
+  };
+  const visibleRows = {
+    allInnerTexts: async () => ["Other A", "Other B", "Codex Native2 DEV"],
+    count: async () => 3,
+    nth: (index: number) => {
+      expect(index).toBe(2);
+      return appResult;
+    },
   };
   const menuRows = {
     evaluateAll: async () => [],
-    filter: (options: { visible?: boolean }) => options.visible
-      ? { count: async () => 3 }
-      : appResult,
+    filter: (options: { visible?: boolean }) => {
+      expect(options).toEqual({ visible: true });
+      return visibleRows;
+    },
   };
   const initialComposer = {
     fill: async () => {},
@@ -840,7 +850,6 @@ test("connector selection moves highlight to the exact hidden-viewport row befor
   const selectedComposer = { selected: true };
   const page = {
     getByRole: personalizedTemporaryChatRole,
-    getByText: () => ({ exactConnectorLabel: true }),
     locator: () => menuRows,
   };
   const selectConnector = (ChatGptBrowserWorker.prototype as unknown as {
@@ -859,9 +868,9 @@ test("connector selection moves highlight to the exact hidden-viewport row befor
 test("connector selection retriggers the complete mention after a fresh-page hydration miss", async () => {
   const calls: string[] = [];
   let menuAttempt = 0;
+  let now = Date.now();
+  const realDateNow = Date.now;
   let selected = false;
-  const timeout = new Error("menu not hydrated");
-  timeout.name = "TimeoutError";
   const selectedConnector = {
     waitFor: async () => {
       expect(selected).toBeTrue();
@@ -870,13 +879,20 @@ test("connector selection retriggers the complete mention after a fresh-page hyd
     count: async () => 1,
   };
   const appResult = {
-    waitFor: async () => {
+    getAttribute: async (name: string) => name === "data-highlighted" ? "" : null,
+  };
+  const visibleRows = {
+    allInnerTexts: async () => {
       menuAttempt += 1;
       calls.push(`menu:${menuAttempt}`);
-      if (menuAttempt === 1) throw timeout;
+      if (menuAttempt === 1) {
+        now += 2_501;
+        return [];
+      }
+      return ["Codex Native2"];
     },
     count: async () => 1,
-    getAttribute: async (name: string) => name === "data-highlighted" ? "" : null,
+    nth: () => appResult,
   };
   const selectedComposer = {
     locator: () => ({ filter: () => selectedConnector }),
@@ -896,31 +912,39 @@ test("connector selection retriggers the complete mention after a fresh-page hyd
   };
   const page = {
     getByRole: personalizedTemporaryChatRole,
-    getByText: () => ({ exactConnectorLabel: true }),
-    locator: (selector: string) => selector.includes("__menu-item")
-      ? { filter: () => appResult, evaluateAll: async () => [] }
-      : (() => { throw new Error(`Unexpected locator: ${selector}`); })(),
+    locator: (selector: string) => {
+      if (selector.includes("__menu-item")) {
+        return { filter: () => visibleRows, evaluateAll: async () => [] };
+      }
+      throw new Error(`Unexpected locator: ${selector}`);
+    },
   };
   const selectConnector = (ChatGptBrowserWorker.prototype as unknown as {
     selectConnector(page: unknown): Promise<unknown>;
   }).selectConnector;
 
-  let activeComposerCalls = 0;
-  await selectConnector.call({
-    config: { appName: "Codex Native2" },
-    connectorIsSelected: async () => selected,
-    connectorMentionRowTitles: async () => [],
-    selectedConnectorControl: () => selectedConnector,
-    activeComposer: async () => {
-      activeComposerCalls += 1;
-      return selected ? selectedComposer : initialComposer;
-    },
-  }, page);
+  Date.now = () => now;
+  try {
+    let activeComposerCalls = 0;
+    await selectConnector.call({
+      config: { appName: "Codex Native2" },
+      connectorIsSelected: async () => selected,
+      connectorMentionRowTitles: async () => [],
+      selectedConnectorControl: () => selectedConnector,
+      activeComposer: async () => {
+        activeComposerCalls += 1;
+        return selected ? selectedComposer : initialComposer;
+      },
+    }, page);
+  } finally {
+    Date.now = realDateNow;
+  }
 
   expect(calls).toEqual([
     "clear",
     "clear", "focus", "type", "menu:1",
     "clear", "focus", "type", "menu:2",
+    "menu:3",
     "activate", "selected",
   ]);
 });
@@ -931,27 +955,26 @@ test("connector verification preserves the host-refreshed catalog evidence", asy
   let selected = false;
   let now = Date.now();
   const realDateNow = Date.now;
-  const timeout = new Error("stale catalog");
-  timeout.name = "TimeoutError";
   const selectedConnector = {
     waitFor: async () => { calls.push("selected"); },
   };
   const appResult = {
-    waitFor: async () => {
-      calls.push(`menu:${catalogFresh ? "fresh" : "stale"}`);
-      if (!catalogFresh) {
-        now += 2_501;
-        throw timeout;
-      }
-    },
-    count: async () => catalogFresh ? 1 : 0,
     getAttribute: async (name: string) => name === "data-highlighted" ? "" : null,
   };
   const visibleRows = {
-    allInnerTexts: async () => catalogFresh ? ["Codex Native2"] : ["Another connector"],
+    allInnerTexts: async () => {
+      calls.push(`menu:${catalogFresh ? "fresh" : "stale"}`);
+      if (!catalogFresh) now += 2_501;
+      return catalogFresh ? ["Codex Native2"] : ["Another connector"];
+    },
+    count: async () => catalogFresh ? 1 : 0,
+    nth: () => appResult,
   };
   const menuRows = {
-    filter: (options: { has?: unknown; visible?: boolean }) => options.visible ? visibleRows : appResult,
+    filter: (options: { visible?: boolean }) => {
+      expect(options).toEqual({ visible: true });
+      return visibleRows;
+    },
   };
   const initialComposer = {
     fill: async () => { calls.push("clear"); },
@@ -962,7 +985,6 @@ test("connector verification preserves the host-refreshed catalog evidence", asy
   const page = {
     getByRole: personalizedTemporaryChatRole,
     reload: async () => { calls.push("reload"); },
-    getByText: () => ({ exactConnectorLabel: true }),
     locator: () => menuRows,
     keyboard: {
       press: async (key: string) => {
@@ -1003,7 +1025,7 @@ test("connector verification preserves the host-refreshed catalog evidence", asy
     );
     expect(prepared).toBe(1);
     expect(calls.filter(call => call === "reload")).toEqual([]);
-    expect(calls.filter(call => call === "menu:stale")).toHaveLength(MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS);
+    expect(calls.filter(call => call === "menu:stale")).toHaveLength(7);
     expect(calls).not.toContain("menu:fresh");
   } finally {
     Date.now = realDateNow;
@@ -1023,29 +1045,29 @@ test("production connector diagnostics distinguish an existing DEV connector", a
   expect(message).toContain(`separate connector named ${JSON.stringify(CHATGPT_CONNECTOR_NAME)}`);
 });
 
-test("connector catalog refresh stays fail-closed for absent, legacy, and exact menu evidence", async () => {
-  const prototype = ChatGptBrowserWorker.prototype as unknown as {
-    clearChatGptComposerState(page: unknown): Promise<void>;
+test("connector catalog refresh stays fail-closed for absent, legacy, and duplicate exact menu evidence", async () => {
+  const selectConnector = (ChatGptBrowserWorker.prototype as unknown as {
     selectConnector(page: unknown, capture?: unknown, refresh?: boolean): Promise<unknown>;
-  };
-  const selectConnector = prototype.selectConnector;
-  const timeout = new Error("menu timeout");
-  timeout.name = "TimeoutError";
+  }).selectConnector;
   const realDateNow = Date.now;
   const run = async (visibleRows: string[]) => {
     let now = realDateNow();
     const page = {
       getByRole: personalizedTemporaryChatRole,
-      getByText: () => ({ exactConnectorLabel: true }),
       locator: () => ({
-        filter: (options: { has?: unknown; visible?: boolean }) => options.visible
-          ? { allInnerTexts: async () => visibleRows }
-          : {
-              waitFor: async () => {
+        filter: (options: { visible?: boolean }) => {
+          expect(options).toEqual({ visible: true });
+          return {
+            allInnerTexts: async () => {
+              if (!visibleRows.some(text => (text.split(/\r?\n/)[0] ?? "") === CHATGPT_CONNECTOR_NAME)) {
                 now += 20_001;
-                throw timeout;
-              },
+              }
+              return visibleRows;
             },
+            count: async () => visibleRows.length,
+            nth: () => ({ getAttribute: async () => "" }),
+          };
+        },
       }),
     };
     Date.now = () => now;
@@ -1086,7 +1108,10 @@ test("connector catalog refresh stays fail-closed for absent, legacy, and exact 
   });
   expect(missingMenuError.message).toContain(`after ${MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS}`);
   await expect(run(["Codex Native"])).rejects.toThrow("Legacy ChatGPT connector");
-  await expect(run([CHATGPT_CONNECTOR_NAME])).rejects.toThrow("exact row was not visible");
+  await expect(run([
+    CHATGPT_CONNECTOR_NAME,
+    `${CHATGPT_CONNECTOR_NAME}\nsecondary`,
+  ])).rejects.toThrow("duplicate exact");
 });
 
 test("tool-capable prompts use the shared Playwright connector selection before inserting context", async () => {
@@ -1102,12 +1127,15 @@ test("tool-capable prompts use the shared Playwright connector selection before 
     count: async () => 1,
   };
   const appResult = {
-    waitFor: async (options?: { signal?: AbortSignal }) => {
-      expect(options?.signal).toBeDefined();
+    getAttribute: async (name: string) => name === "data-highlighted" ? "" : null,
+  };
+  const visibleRows = {
+    allInnerTexts: async () => {
       calls.push(["connectorMenu"]);
+      return ["Codex Native2"];
     },
     count: async () => 1,
-    getAttribute: async (name: string) => name === "data-highlighted" ? "" : null,
+    nth: () => appResult,
   };
   const selectedComposer = {
     focus: async (options?: { signal?: AbortSignal }) => {
@@ -1146,10 +1174,12 @@ test("tool-capable prompts use the shared Playwright connector selection before 
   };
   const page = {
     getByRole: personalizedTemporaryChatRole,
-    getByText: () => ({ exactConnectorLabel: true }),
-    locator: (selector: string) => selector.includes("__menu-item")
-      ? { filter: () => appResult, evaluateAll: async () => [] }
-      : (() => { throw new Error(`Unexpected locator: ${selector}`); })(),
+    locator: (selector: string) => {
+      if (selector.includes("__menu-item")) {
+        return { filter: () => visibleRows, evaluateAll: async () => [] };
+      }
+      throw new Error(`Unexpected locator: ${selector}`);
+    },
   };
   const attachPrompt = (ChatGptBrowserWorker.prototype as unknown as {
     attachPrompt(
@@ -1187,6 +1217,7 @@ test("tool-capable prompts use the shared Playwright connector selection before 
     ["focus"],
     ["type", "@codex"],
     ["connectorMenu"],
+    ["connectorMenu"],
     ["selectConnector"],
     ["selectedConnector"],
     ["selectedFocus"],
@@ -1206,15 +1237,19 @@ test("an aborted connector proof clears its mention before the preflight release
     count: async () => 0,
   };
   const appResult = {
-    waitFor: async ({ signal }: { signal?: AbortSignal }) => {
-      expect(signal).toBeDefined();
+    getAttribute: async () => "",
+  };
+  const visibleRows = {
+    allInnerTexts: async () => {
       calls.push("proof-wait");
       controller.abort();
-      throw new DOMException("proof aborted", "AbortError");
+      return [];
     },
+    count: async () => 1,
+    nth: () => appResult,
   };
   const menuRows = {
-    filter: () => appResult,
+    filter: () => visibleRows,
   };
   const composer = {
     fill: async (_value: string, { signal }: { signal?: AbortSignal }) => {
@@ -1228,7 +1263,6 @@ test("an aborted connector proof clears its mention before the preflight release
   };
   const page = {
     getByRole: () => absent,
-    getByText: () => ({ exactConnectorLabel: true }),
     locator: (selector: string) => {
       if (selector === "body") return {
         press: async (_key: string, { signal }: { signal?: AbortSignal }) => {
@@ -1273,14 +1307,18 @@ test("an aborted real connector selection clears the typed mention before return
   const calls: string[] = [];
   let composerText = "";
   const appResult = {
-    waitFor: async ({ signal }: { signal?: AbortSignal }) => {
-      expect(signal).toBeDefined();
+    getAttribute: async () => "",
+  };
+  const visibleRows = {
+    allInnerTexts: async () => {
       calls.push("selection-wait");
       controller.abort();
-      throw new DOMException("selection aborted", "AbortError");
+      return [];
     },
+    count: async () => 1,
+    nth: () => appResult,
   };
-  const menuRows = { filter: () => appResult };
+  const menuRows = { filter: () => visibleRows };
   const composer = {
     fill: async (value: string, { signal }: { signal?: AbortSignal }) => {
       expect(signal).toBeDefined();
@@ -1296,7 +1334,6 @@ test("an aborted real connector selection clears the typed mention before return
   };
   const page = {
     getByRole: personalizedTemporaryChatRole,
-    getByText: () => ({ exactConnectorLabel: true }),
     locator: (selector: string) => {
       if (selector === "body") return {
         press: async () => { calls.push("escape"); },
@@ -1331,11 +1368,14 @@ test("an abort after connector activation removes the selected pill before retur
   let composerText = "";
   let connectorSelected = false;
   const appResult = {
-    waitFor: async () => {},
-    count: async () => 1,
     getAttribute: async () => "",
   };
-  const menuRows = { filter: () => appResult };
+  const visibleRows = {
+    allInnerTexts: async () => [CHATGPT_CONNECTOR_NAME],
+    count: async () => 1,
+    nth: () => appResult,
+  };
+  const menuRows = { filter: () => visibleRows };
   const composer = {
     fill: async (value: string) => {
       composerText = value;
@@ -1352,7 +1392,6 @@ test("an abort after connector activation removes the selected pill before retur
   };
   const page = {
     getByRole: personalizedTemporaryChatRole,
-    getByText: () => ({ exactConnectorLabel: true }),
     locator: (selector: string) => selector === "body"
       ? { press: async () => {} }
       : menuRows,

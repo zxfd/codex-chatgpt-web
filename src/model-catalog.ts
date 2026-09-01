@@ -22,6 +22,17 @@ function slug(value: unknown): string | undefined {
   return typeof candidate === "string" ? candidate : undefined;
 }
 
+function shouldExposeNativeModel(value: unknown): boolean {
+  const modelSlug = slug(value);
+  if (!modelSlug) return true;
+  if (modelSlug.startsWith(CHATGPT_WEB_MODEL_PREFIX)) return false;
+  const match = /^gpt-(\d+)\.(\d+)(?:$|[-.])/.exec(modelSlug);
+  if (!match) return true;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major > 5 || (major === 5 && minor >= 6);
+}
+
 function reasoningLevel(template: JsonObject, effort: string, description: string): JsonObject {
   const levels = Array.isArray(template.supported_reasoning_levels)
     ? template.supported_reasoning_levels.filter(level => level && typeof level === "object" && !Array.isArray(level)) as JsonObject[]
@@ -160,7 +171,7 @@ export function augmentNativeModelCatalog(
     throw new Error("Native Codex models response is missing a models array");
   }
   const nativeModels = structuredClone(
-    catalog.models.filter(model => !slug(model)?.startsWith(CHATGPT_WEB_MODEL_PREFIX)),
+    catalog.models.filter(shouldExposeNativeModel),
   );
   if (config.subagentProtocol === "compatibility-v1") {
     for (const candidate of nativeModels) {

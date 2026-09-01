@@ -49,8 +49,6 @@ test("proxies official /models auth and query, then appends the fixed ChatGPT We
   };
   expect(body.models.map(model => model.slug)).toEqual([
     "gpt-5.6-sol",
-    "chatgpt-web/light",
-    "chatgpt-web/medium",
     "chatgpt-web/high",
     "chatgpt-web/extra-high",
     "chatgpt-web/pro",
@@ -59,8 +57,8 @@ test("proxies official /models auth and query, then appends the fixed ChatGPT We
   expect(body.models[0]!.max_context_window).toBe(371_851);
   expect(body.models[0]!.auto_compact_token_limit).toBe(270_000);
   expect(body.models[0]!.multi_agent_version).toBe("v2");
-  for (const [index, model] of body.models.slice(1).entries()) {
-    const route = CHATGPT_WEB_MODEL_ROUTES[index]!;
+  for (const model of body.models.slice(1)) {
+    const route = CHATGPT_WEB_MODEL_ROUTES.find(candidate => candidate.slug === model.slug)!;
     const limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, config);
     expect(model.context_window).toBe(limits.contextWindow);
     expect(model.max_context_window).toBe(limits.contextWindow);
@@ -119,7 +117,7 @@ test("ChatGPT-only native catalog rows do not turn model discovery into a 502", 
   const body = await response.json() as { models: Array<{ slug: string; supported_in_api?: boolean }> };
   expect(body.models[0]).toMatchObject({ slug: "gpt-chatgpt-only", supported_in_api: false });
   expect(body.models.filter(model => model.slug.startsWith("chatgpt-web/")))
-    .toHaveLength(3);
+    .toHaveLength(1);
   expect(body.models.filter(model => model.slug.startsWith("chatgpt-web/"))
     .every(model => model.supported_in_api === true)).toBe(true);
 });

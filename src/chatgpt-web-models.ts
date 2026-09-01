@@ -239,6 +239,12 @@ export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebModelRoute[] = [
   },
 ];
 
+const CHATGPT_WEB_PREFERRED_SOL_MODEL_ROUTES = CHATGPT_WEB_MODEL_ROUTES.filter(route =>
+  route.slug === "chatgpt-web/high"
+  || route.slug === "chatgpt-web/extra-high"
+  || route.slug === "chatgpt-web/pro"
+);
+
 const routesBySlug = new Map(
   [...CHATGPT_WEB_LUNA_MODEL_ROUTES, ...CHATGPT_WEB_MODEL_ROUTES].map(route => [route.slug, route]),
 );
@@ -252,8 +258,8 @@ export function availableChatGptWebModelRoutes(
 ): readonly ChatGptWebModelRoute[] {
   if (!capabilities.solAvailable) return CHATGPT_WEB_LUNA_MODEL_ROUTES;
   return capabilities.proAvailable
-    ? CHATGPT_WEB_MODEL_ROUTES
-    : CHATGPT_WEB_MODEL_ROUTES.filter(route => !route.requiresPro);
+    ? CHATGPT_WEB_PREFERRED_SOL_MODEL_ROUTES
+    : CHATGPT_WEB_PREFERRED_SOL_MODEL_ROUTES.filter(route => !route.requiresPro);
 }
 
 export function requireChatGptWebModelRoute(

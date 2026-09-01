@@ -42,14 +42,15 @@ describe("fixed ChatGPT Web model routes", () => {
     expect(CHATGPT_WEB_MODEL_ROUTES[0]?.displayName).toBe("ChatGPT Web — Instant");
   });
 
-  test("exposes only Plus-eligible routes without the Pro account capability", () => {
+  test("keeps only the high-value Sol routes in the published catalog", () => {
     expect(availableChatGptWebModelRoutes(plus).map(route => route.slug)).toEqual([
-      "chatgpt-web/light",
-      "chatgpt-web/medium",
       "chatgpt-web/high",
     ]);
-    expect(availableChatGptWebModelRoutes({ solAvailable: true, proAvailable: true }))
-      .toEqual(CHATGPT_WEB_MODEL_ROUTES);
+    expect(availableChatGptWebModelRoutes(pro).map(route => route.slug)).toEqual([
+      "chatgpt-web/high",
+      "chatgpt-web/extra-high",
+      "chatgpt-web/pro",
+    ]);
     expect(() => requireChatGptWebModelRoute("chatgpt-web/extra-high", plus))
       .toThrow("Extra High is not available for this account");
     expect(() => requireChatGptWebModelRoute("chatgpt-web/pro", plus))

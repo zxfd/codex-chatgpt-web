@@ -184,6 +184,49 @@ function chatGptConnectorUnavailableError(message: string): ChatGptWebAdapterErr
   });
 }
 
+async function waitForConnectorMentionRow(
+  menuRows: Locator,
+  appName: string,
+  timeoutMs = 2_500,
+  abortSignal?: AbortSignal,
+): Promise<Locator> {
+  const visibleRows = menuRows.filter({ visible: true });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    throwIfPromptAttachmentAborted(abortSignal);
+    let texts: string[];
+    try {
+      texts = await withBrowserTurnAbort(
+        withChatGptBrowserObservationTimeout(visibleRows.allInnerTexts()),
+        abortSignal,
+      );
+    } catch (error) {
+      if (abortSignal?.aborted) throw error;
+      texts = [];
+    }
+    const matchingIndexes = texts
+      .map((text, index) => ({
+        index,
+        title: (text.split(/\r?\n/)[0] ?? "").replace(/\s+/g, " ").trim(),
+      }))
+      .filter(row => row.title === appName)
+      .map(row => row.index);
+    if (matchingIndexes.length > 1) {
+      throw chatGptConnectorUnavailableError(
+        `ChatGPT connector menu exposed duplicate exact ${JSON.stringify(appName)} rows`,
+      );
+    }
+    if (matchingIndexes.length === 1) return visibleRows.nth(matchingIndexes[0]);
+    await withBrowserTurnAbort(
+      new Promise(resolveSleep => setTimeout(resolveSleep, 50)),
+      abortSignal,
+    );
+  }
+  const timeout = new Error(`ChatGPT connector menu did not expose ${JSON.stringify(appName)}`);
+  timeout.name = "TimeoutError";
+  throw timeout;
+}
+
 export type ChatGptPersonalizationPreflight = "already-personalized" | "enabled";
 
 const CHATGPT_PERSONALIZATION_CONTROL_SELECTOR = [
@@ -2821,7 +2864,7 @@ export class ChatGptBrowserWorker {
       texts = [];
     }
     return texts
-      .map(text => (text.split("\n")[0] ?? "").replace(/\s+/g, " ").trim())
+      .map(text => (text.split(/\r?\n/)[0] ?? "").replace(/\s+/g, " ").trim())
       .filter(title => title.length > 0);
   }
 
@@ -2889,9 +2932,6 @@ export class ChatGptBrowserWorker {
     };
     let composer: Locator;
     const menuRows = page.locator('.__menu-item[tabindex="0"]');
-    const appResult = menuRows.filter({
-      has: page.getByText(this.config.appName, { exact: true }),
-    });
     await ensureChatGptPersonalizedConnectorAccess(
       page,
       capture,
@@ -2915,7 +2955,7 @@ export class ChatGptBrowserWorker {
             timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
           });
           try {
-            await appResult.waitFor({ state: "visible", timeout: 2_500, signal: personalizationSignal });
+            await waitForConnectorMentionRow(menuRows, this.config.appName, 2_500, personalizationSignal);
             proofResult = true;
           } catch (error) {
             if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
@@ -2962,14 +3002,14 @@ export class ChatGptBrowserWorker {
           await capture("connector-mention-triggered");
         }
         try {
-          await appResult.waitFor({
-            state: "visible",
-            timeout: 2_500,
-            signal: abortSignal,
-          });
+          await waitForConnectorMentionRow(menuRows, this.config.appName, 2_500, abortSignal);
           await capture("connector-menu-visible");
           break;
         } catch (error) {
+          if (error instanceof ChatGptWebAdapterError && error.code === "connector_not_found") {
+            await capture("connector-menu-missing");
+            throw error;
+          }
           if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
           const visibleRows = await this.connectorMentionRowTitles(menuRows, abortSignal);
           const knownIdentityMismatch = this.config.appName === CHATGPT_CONNECTOR_NAME
@@ -3002,16 +3042,12 @@ export class ChatGptBrowserWorker {
           }
         }
       }
-      const exactResultCount = await withBrowserTurnAbort(
-        withChatGptBrowserObservationTimeout(appResult.count()),
+      const appResult = await waitForConnectorMentionRow(
+        menuRows,
+        this.config.appName,
+        2_500,
         abortSignal,
       );
-      if (exactResultCount !== 1) {
-        throw chatGptConnectorUnavailableError(
-          `ChatGPT connector menu did not expose one exact ${JSON.stringify(this.config.appName)} row`
-          + ` after ${attemptBudget.triggerAttempts} complete mention trigger attempt(s)`,
-        );
-      }
       // Hidden launcher maintenance keeps a 1x1 Chromium viewport, so pointer activation cannot
       // reach this menu. Unlike the old unguarded composer Enter path, require the exact row to own
       // ChatGPT's keyboard highlight first; otherwise move the menu highlight until it does. Keep
