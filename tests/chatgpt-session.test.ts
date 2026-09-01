@@ -153,17 +153,14 @@ test("capability detection waits for the Pro effort slider when model rows rende
     isVisible: async () => true,
     locator: () => efforts,
   };
-  let sliderVisible = false;
   let sliderWaits = 0;
   const slider = {
     filter() { return this; },
     last() { return this; },
     waitFor: async () => {
       sliderWaits += 1;
-      if (sliderWaits === 1) return await new Promise<void>(() => {});
-      sliderVisible = true;
     },
-    isVisible: async () => sliderVisible,
+    isVisible: async () => false,
     getAttribute: async (name: string) => ({
       "aria-valuemin": "0",
       "aria-valuemax": "4",
@@ -184,5 +181,52 @@ test("capability detection waits for the Pro effort slider when model rows rende
     solAvailable: true,
     proAvailable: true,
   });
-  expect(sliderWaits).toBe(2);
+  expect(sliderWaits).toBe(1);
+});
+
+test("current model rows can never substitute for the authoritative effort slider", async () => {
+  const effortButton = {
+    last() { return this; },
+    isVisible: async () => true,
+    getAttribute: async () => "true",
+  };
+  const composerForm = { locator: () => effortButton };
+  const composers = {
+    filter() { return this; },
+    last() { return this; },
+    locator: () => composerForm,
+  };
+  const efforts = {
+    first() { return this; },
+    waitFor: async () => {},
+    count: async () => 2,
+  };
+  const menu = {
+    last() { return this; },
+    isVisible: async () => true,
+    locator: () => efforts,
+  };
+  let sliderWaits = 0;
+  const slider = {
+    filter() { return this; },
+    last() { return this; },
+    waitFor: async () => {
+      sliderWaits += 1;
+      throw new Error("slider never hydrated");
+    },
+    isVisible: async () => false,
+  };
+  const page = {
+    locator: (selector: string) => {
+      if (selector === CHATGPT_COMPOSER_SELECTOR) return composers;
+      if (selector === CHATGPT_EFFORT_MENU_SELECTOR) return menu;
+      if (selector === CHATGPT_EFFORT_SLIDER_SELECTOR) return slider;
+      throw new Error(`Unexpected selector: ${selector}`);
+    },
+    keyboard: { press: async () => {} },
+  };
+
+  await expect(detectChatGptAccountCapabilities(page as never))
+    .rejects.toThrow("slider never hydrated");
+  expect(sliderWaits).toBe(1);
 });

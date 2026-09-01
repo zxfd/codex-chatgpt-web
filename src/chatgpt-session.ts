@@ -127,38 +127,15 @@ export async function detectChatGptAccountCapabilities(
   const menuExpanded = await effortButton.getAttribute("aria-expanded").catch(() => null);
   if (!menuVisible && menuExpanded !== "true") await effortButton.press("Enter");
   try {
-    const efforts = menu.locator(CHATGPT_EFFORT_ITEM_SELECTOR);
     const slider = page.locator(CHATGPT_EFFORT_SLIDER_SELECTOR).filter({ visible: true }).last();
-    const waitAbort = new AbortController();
-    try {
-      const ready = await Promise.race([
-        efforts.first().waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal })
-          .then(() => "items" as const),
-        slider.waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal })
-          .then(() => "slider" as const),
-      ]);
-      let sliderVisible = ready === "slider" || await slider.isVisible().catch(() => false);
-      if (!sliderVisible && ready === "items") {
-        // The current ChatGPT picker renders the GPT model rows a little before it hydrates the
-        // reasoning-effort slider. Give that authoritative control a short grace window before
-        // falling back to counting legacy menu rows, otherwise Pro is persisted as unavailable.
-        sliderVisible = await slider.waitFor({ state: "visible", timeout: 1_000 })
-          .then(() => true)
-          .catch(() => false);
-      }
-      if (!sliderVisible) {
-        return { solAvailable: true, proAvailable: await efforts.count() >= 5 };
-      }
-      const state = parseChatGptEffortSliderState(
-        await slider.getAttribute("aria-valuemin"),
-        await slider.getAttribute("aria-valuemax"),
-        await slider.getAttribute("aria-valuenow"),
-      );
-      if (!state) throw new Error("ChatGPT effort slider exposed an invalid ARIA range");
-      return { solAvailable: true, proAvailable: state.max - state.min + 1 >= 5 };
-    } finally {
-      waitAbort.abort();
-    }
+    await slider.waitFor({ state: "visible", timeout: 70_000 });
+    const state = parseChatGptEffortSliderState(
+      await slider.getAttribute("aria-valuemin"),
+      await slider.getAttribute("aria-valuemax"),
+      await slider.getAttribute("aria-valuenow"),
+    );
+    if (!state) throw new Error("ChatGPT effort slider exposed an invalid ARIA range");
+    return { solAvailable: true, proAvailable: state.max - state.min + 1 >= 5 };
   } finally {
     await page.keyboard.press("Escape").catch(() => {});
   }
