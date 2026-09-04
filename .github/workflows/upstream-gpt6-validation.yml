@@ -1,0 +1,36 @@
+name: Upstream GPT-6 integration validation
+
+on:
+  push:
+    branches: [feat/upstream-v5-gpt6-macos]
+    paths:
+      - .github/workflows/upstream-gpt6-validation.yml
+      - .upstream-gpt6.patch
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch pinned upstream without changing the working tree
+        run: |
+          git fetch https://github.com/miuuyy/codex-chatgpt-web.git 184b1d69b764982f9a34dce127d5f4d826afa9d8
+          git update-ref refs/heads/upstream-inspection FETCH_HEAD
+          git bundle create "$RUNNER_TEMP/upstream-workspace.bundle" --all
+          git log --oneline --left-right HEAD...upstream-inspection > "$RUNNER_TEMP/divergence.txt"
+          git diff --stat HEAD...upstream-inspection > "$RUNNER_TEMP/upstream-stat.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upstream-gpt6-workspace
+          retention-days: 3
+          path: |
+            ${{ runner.temp }}/upstream-workspace.bundle
+            ${{ runner.temp }}/divergence.txt
+            ${{ runner.temp }}/upstream-stat.txt
