@@ -75,6 +75,68 @@ index c286360..0000000
 -            ${{ runner.temp }}/validation.log
 -            ${{ runner.temp }}/git-status.txt
 -            ${{ runner.temp }}/commit.txt
+diff --git a/README.ja.md b/README.ja.md
+index 19595da..9a4fb12 100644
+--- a/README.ja.md
++++ b/README.ja.md
+@@ -68,6 +68,26 @@ Full モードでは、次のコンパクション境界まで、MCP が ChatGPT
+ [一時チャットポリシー](https://help.openai.com/en/articles/8914046-temporary-chat-faq)が適用されます。
+ このプロジェクトは非公式です。適用される OpenAI の利用規約とワークスペースポリシーを守る責任は利用者にあります。
+ 
++## このフォーク：GPT-6 Pro とローカルモデル一覧
++
++既存のモデル ID `chatgpt-web/pro` は、Sol の Pro effort の表示名を変えるだけでなく、
++**GPT-6 Pro（Astra）** に明示的にルーティングされます。ブラウザーで GPT-6 モデルを選択・確認してから
++Pro effort を設定し、プロンプト送信前にモデルを再確認します。アカウントへの提供がまだ始まっていない場合、
++選択肢が無効な場合、または UI で確認できない場合は明示的なエラーとなり、GPT-5.6 Sol Pro に黙って切り替えません。
++正式名称と提供状況は公式の説明を参照してください：
++[GPT-5.6 and GPT-6 Pro in ChatGPT](https://help.openai.com/en/articles/20001354-gpt-56-in-chatgpt)。
++
++ローカル Codex の一覧ではネイティブの **Luna と Terra** を非表示にし、Sol とネイティブ Astra は維持します。
++ネイティブプロトコルのメタデータは削除せず、実行中のタスクや保存済みの既定モデルも変更しません。
++Free/Go 用の Web Luna 互換ルートは引き続き利用できます。有料アカウントには主に Web High、
++Web Extra High（Pro が必要）、Web GPT-6 Pro（Pro と Web での利用権限が必要）が表示されます。
++
++このフォークのソースを更新してランチャーを再起動し、Codex を完全に再起動してモデル一覧を更新した後、
++**ChatGPT Web — GPT-6 Pro** を選択してください。`git pull` だけではインストール済みの上流版は更新されません。
++ソースから実行する場合は `bun run app` を使用し、パッケージ版はこのフォークから再ビルドしてください。
++GPT-6 には当面、API のコンテキスト上限ではなく、既存の Pro の保守的なブラウザー上限を使用します。
++実際の Web 上限は実測による確認が必要です。
++
+ ## クイックスタート
+ 
+ デスクトップランチャーをインストールまたは更新します。既存のインストールを更新・修復する場合は、
+diff --git a/README.md b/README.md
+index 8b64835..a034680 100644
+--- a/README.md
++++ b/README.md
+@@ -69,6 +69,26 @@ processed by OpenAI and are subject to the account's settings and OpenAI's
+ is unofficial; users remain responsible for complying with applicable OpenAI terms and workspace
+ policies.
+ 
++## This fork: GPT-6 Pro and the local model picker
++
++The existing `chatgpt-web/pro` model ID now explicitly routes to **GPT-6 Pro (Astra)**,
++instead of merely relabeling Sol's Pro effort. The browser selects and confirms the GPT-6 model
++before setting Pro effort, then checks the model again before sending the prompt. If GPT-6 has
++not rolled out to the account, is disabled, or cannot be verified in the UI, the request fails
++explicitly instead of silently using GPT-5.6 Sol Pro. See the official product and availability notes:
++[GPT-5.6 and GPT-6 Pro in ChatGPT](https://help.openai.com/en/articles/20001354-gpt-56-in-chatgpt).
++
++Native **Luna and Terra** are hidden from the local Codex picker; Sol and native Astra remain.
++Hiding rows preserves native protocol metadata and does not alter active tasks or saved default
++models. The Free/Go Web Luna compatibility routes remain available. For paid accounts, this fork
++primarily lists Web High, Web Extra High (requires Pro), and Web GPT-6 Pro (requires Pro and Web access).
++
++Update this fork's source, restart the launcher, then fully restart Codex to refresh its model list
++and select **ChatGPT Web — GPT-6 Pro**. A `git pull` does not update an installed upstream release:
++use `bun run app` for a source installation, or rebuild the packaged launcher from this fork.
++GPT-6 initially uses the existing conservative Pro browser budget, not the API context window;
++the actual Web limits still need live measurement.
++
+ ## Quick start
+ 
+ Install or update the desktop launcher. To update or repair an existing installation, quit the
 diff --git a/README.zh-CN.md b/README.zh-CN.md
 index 5752409..da608e4 100644
 --- a/README.zh-CN.md
@@ -530,7 +592,7 @@ diff --git a/tests/chatgpt-web-models.test.ts b/tests/chatgpt-web-models.test.ts
 index 03ecf51..e64e169 100644
 --- a/tests/chatgpt-web-models.test.ts
 +++ b/tests/chatgpt-web-models.test.ts
-@@ -3,6 +3,7 @@ import { chatGptConversationKey } from "../src/adapters/chatgpt-web/conversation
+@@ -3,6 +3,7 @@ import { chatGptConversationKey } from "../src/adapters/chatgpt-web/conversation-key";
  import {
    availableChatGptWebModelRoutes,
    CHATGPT_WEB_BACKEND_MODEL,
@@ -550,7 +612,7 @@ diff --git a/tests/gpt6-catalog.test.ts b/tests/gpt6-catalog.test.ts
 index 5fe0317..a02b679 100644
 --- a/tests/gpt6-catalog.test.ts
 +++ b/tests/gpt6-catalog.test.ts
-@@ -44,3 +44,26 @@ test("native Luna and Terra rows are hidden without suppressing Sol or GPT-6 Ast
+@@ -44,3 +44,26 @@ test("native Luna and Terra rows are hidden without suppressing Sol or GPT-6 Astra", () => {
    expect(visibility.get("gpt-5.6-terra")).toBe("hide");
    expect(visibility.get("gpt-6-astra")).toBe("list");
  });
