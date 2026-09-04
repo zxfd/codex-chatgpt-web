@@ -3,6 +3,7 @@ import { chatGptConversationKey } from "../src/adapters/chatgpt-web/conversation
 import {
   availableChatGptWebModelRoutes,
   CHATGPT_WEB_BACKEND_MODEL,
+  CHATGPT_WEB_ASTRA_BACKEND_MODEL,
   CHATGPT_WEB_LUNA_BACKEND_MODEL,
   CHATGPT_WEB_LUNA_MODEL_ROUTE,
   CHATGPT_WEB_LUNA_MODEL_ROUTES,
@@ -179,6 +180,7 @@ describe("fixed ChatGPT Web model routes", () => {
     config.proAvailable = true;
     const request = parsed("chatgpt-web/pro", "low");
     expect(routeChatGptWebRequest(request, config).adapterEffort).toBe("max");
+    expect(request.modelId).toBe(CHATGPT_WEB_ASTRA_BACKEND_MODEL);
     expect(request.options.reasoning).toBe("max");
     expect(() => routeChatGptWebRequest(parsed("chatgpt-web/not-enabled"), config))
       .toThrow("model is not enabled");

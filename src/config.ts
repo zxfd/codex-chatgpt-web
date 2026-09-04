@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, resolve, sep, win32 } from "node:path";
 import { tmpdir } from "node:os";
 import type { CodexProviderConfig } from "./types";
+import { CHATGPT_WEB_ASTRA_BACKEND_MODEL, CHATGPT_WEB_BACKEND_MODEL, CHATGPT_WEB_LUNA_BACKEND_MODEL } from "./chatgpt-web-models";
 import { VERSION } from "./version";
 
 export type RuntimeMode = "browser-only" | "full";
@@ -437,8 +438,9 @@ export function saveConfig(config: AppConfig): void {
 }
 
 export function providerConfig(config: AppConfig): CodexProviderConfig {
-  const model = config.solAvailable ? "gpt-5.6-sol" : "gpt-5.6-luna";
-  const models = [model];
+  const model = config.solAvailable ? CHATGPT_WEB_BACKEND_MODEL : CHATGPT_WEB_LUNA_BACKEND_MODEL;
+  const astraAvailable = config.solAvailable && config.proAvailable;
+  const models = [model, ...(astraAvailable ? [CHATGPT_WEB_ASTRA_BACKEND_MODEL] : [])];
   const efforts = config.solAvailable
     ? ["low", "medium", "high", "xhigh", ...(config.proAvailable ? ["max"] : [])]
     : ["low", "medium"];
@@ -450,8 +452,14 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
     defaultModel: model,
     contextWindow: config.contextWindow,
     modelInputModalities: Object.fromEntries(models.map(model => [model, ["text", "image"]])),
-    modelReasoningEfforts: { [model]: efforts },
-    modelDefaultReasoningEfforts: { [model]: config.solAvailable ? "high" : "low" },
+    modelReasoningEfforts: {
+      [model]: efforts,
+      ...(astraAvailable ? { [CHATGPT_WEB_ASTRA_BACKEND_MODEL]: ["max"] } : {}),
+    },
+    modelDefaultReasoningEfforts: {
+      [model]: config.solAvailable ? "high" : "low",
+      ...(astraAvailable ? { [CHATGPT_WEB_ASTRA_BACKEND_MODEL]: "max" } : {}),
+    },
     noReasoningModels: [],
     chatgptWeb: {
       appName: config.appName,

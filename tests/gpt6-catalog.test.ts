@@ -44,3 +44,26 @@ test("native Luna and Terra rows are hidden without suppressing Sol or GPT-6 Ast
   expect(visibility.get("gpt-5.6-terra")).toBe("hide");
   expect(visibility.get("gpt-6-astra")).toBe("list");
 });
+
+test("local picker filters Luna/Terra aliases and dated variants without mutating upstream metadata", () => {
+  const hidden = [
+    ["gpt-5.6-luna-preview", "5.6 Luna Preview"],
+    ["GPT-5.6-TERRA", "5.6 Terra"],
+    ["luna", "Luna"],
+    ["openai/terra-preview", "Terra Preview"],
+    ["opaque-native-id", "GPT-5.6 Luna"],
+  ];
+  const input = { models: [listModel("gpt-5.6-sol", "5.6 Sol"),
+    ...hidden.map(([slug, name]) => listModel(slug!, name!)),
+    listModel("terraform-assistant", "Terraform assistant"),
+    listModel("gpt-6-astra", "6 Astra"),
+  ] };
+  const original = structuredClone(input);
+  const output = augmentNativeModelCatalog(input, defaultConfig("full"));
+  const models = output.models as Array<Record<string, unknown>>;
+  for (const [slug] of hidden) expect(models.find(model => model.slug === slug)?.visibility).toBe("hide");
+  expect(models.find(model => model.slug === "gpt-6-astra")?.visibility).toBe("list");
+  expect(models.find(model => model.slug === "terraform-assistant")?.visibility).toBe("list");
+  expect(input).toEqual(original);
+  expect(models.find(model => model.slug === "luna")?.supported_reasoning_levels).toEqual(original.models[3]?.supported_reasoning_levels);
+});

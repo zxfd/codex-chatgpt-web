@@ -1,9 +1,11 @@
 import {
   CHATGPT_WEB_BACKEND_MODEL,
+  CHATGPT_WEB_ASTRA_BACKEND_MODEL,
   CHATGPT_WEB_LUNA_BACKEND_MODEL,
 } from "../../chatgpt-web-models";
 
 export const CHATGPT_WEB_MODEL_ID = CHATGPT_WEB_BACKEND_MODEL;
+export const CHATGPT_WEB_ASTRA_MODEL_ID = CHATGPT_WEB_ASTRA_BACKEND_MODEL;
 export const CHATGPT_WEB_LUNA_MODEL_ID = CHATGPT_WEB_LUNA_BACKEND_MODEL;
 
 export interface ChatGptWebCapabilities {
@@ -15,7 +17,7 @@ export interface ChatGptWebCapabilities {
 export interface ChatGptWebModelMode {
   modelId: string;
   effort: "low" | "medium" | "high" | "xhigh" | "max";
-  displayLabel: "Luna" | "Think" | "Instant" | "Medium" | "High" | "Extra High" | "Pro";
+  displayLabel: "Luna" | "Think" | "Instant" | "Medium" | "High" | "Extra High" | "Pro" | "GPT-6 Pro";
   uiEffortIndex: 0 | 1 | 2 | 3 | 4 | null;
   thinkEnabled: boolean;
   localTools: boolean;
@@ -42,6 +44,17 @@ export function resolveChatGptWebModelMode(
       uiEffortIndex: null,
       thinkEnabled,
       localTools: capabilities.localToolsEnabled,
+    };
+  }
+  if (modelId === CHATGPT_WEB_ASTRA_MODEL_ID) {
+    if (!capabilities.solAvailable || !capabilities.proAvailable) {
+      throw new Error("ChatGPT GPT-6 Pro is not available for this account");
+    }
+    const effort = reasoning ?? "max";
+    if (effort !== "max") throw new Error(`ChatGPT GPT-6 Pro effort is not supported: ${effort}`);
+    return {
+      modelId, effort, displayLabel: "GPT-6 Pro", uiEffortIndex: 4,
+      thinkEnabled: false, localTools: capabilities.localToolsEnabled,
     };
   }
   if (modelId !== CHATGPT_WEB_MODEL_ID) {

@@ -35,8 +35,13 @@ function shouldExposeNativeModel(value: unknown): boolean {
 
 function shouldHideNativeSelectorModel(value: unknown): boolean {
   const modelSlug = slug(value);
-  return modelSlug !== undefined
-    && /^gpt-\d+(?:\.\d+)?-(?:luna|terra)(?:$|[-.])/i.test(modelSlug);
+  if (modelSlug !== undefined
+    && /(?:^|\/)(?:gpt-\d+(?:\.\d+)?-)?(?:luna|terra)(?:$|[-.])/i.test(modelSlug)) return true;
+  // Also cover catalog aliases with an opaque slug and an explicit model-family display name.
+  const name = value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonObject).display_name : undefined;
+  return typeof name === "string"
+    && /^(?:(?:gpt[-\s]*)?\d+(?:\.\d+)?[-\s]+)?(?:luna|terra)(?:$|[\s.-])/i.test(name.trim());
 }
 
 function reasoningLevel(template: JsonObject, effort: string, description: string): JsonObject {
