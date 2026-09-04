@@ -1,0 +1,763 @@
+diff --git a/.github/workflows/gpt6-validation.yml b/.github/workflows/gpt6-validation.yml
+deleted file mode 100644
+index c286360..0000000
+--- a/.github/workflows/gpt6-validation.yml
++++ /dev/null
+@@ -1,71 +0,0 @@
+-name: GPT-6 focused validation
+-
+-on:
+-  push:
+-    branches: [feat/gpt6-web-model-selection]
+-    paths:
+-      - .github/workflows/gpt6-validation.yml
+-      - .gpt6-change.patch
+-
+-permissions:
+-  contents: write
+-
+-concurrency:
+-  group: gpt6-focused-validation
+-  cancel-in-progress: false
+-
+-jobs:
+-  validate:
+-    runs-on: ubuntu-latest
+-    timeout-minutes: 20
+-    steps:
+-      - uses: actions/checkout@v6
+-      - name: Apply reviewed source patch when present
+-        id: patch
+-        shell: bash
+-        run: |
+-          if test -f .gpt6-change.patch; then
+-            git apply --check .gpt6-change.patch
+-            git apply .gpt6-change.patch
+-            rm .gpt6-change.patch
+-            echo 'applied=true' >> "$GITHUB_OUTPUT"
+-          fi
+-      - uses: oven-sh/setup-bun@v2
+-        if: steps.patch.outputs.applied == 'true'
+-        with:
+-          bun-version: 1.4.0
+-      - name: Install dependencies
+-        if: steps.patch.outputs.applied == 'true'
+-        run: |
+-          bun install --frozen-lockfile
+-          cd launcher && bun install --frozen-lockfile
+-      - name: Typecheck and run regression tests
+-        if: steps.patch.outputs.applied == 'true'
+-        run: |
+-          set -o pipefail
+-          { bun run typecheck && bun test tests/*.test.ts && bun run launcher:typecheck && bun run launcher:test && bun run launcher:build; } 2>&1 | tee "$RUNNER_TEMP/validation.log"
+-      - name: Commit validated changes on the feature branch only
+-        if: steps.patch.outputs.applied == 'true'
+-        run: |
+-          git config user.name 'github-actions[bot]'
+-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+-          git add -A
+-          git diff --cached --check
+-          git commit -m 'feat: support explicit GPT-6 Pro web routing and filter local Luna/Terra models'
+-          git push origin HEAD:refs/heads/feat/gpt6-web-model-selection
+-      - name: Export source and validation results
+-        if: always()
+-        run: |
+-          tar --exclude=.git --exclude=node_modules --exclude=launcher/node_modules --exclude=dist --exclude=launcher/dist --exclude=launcher/artifacts --exclude=launcher/out -czf "$RUNNER_TEMP/gpt6-source.tar.gz" .
+-          git status --short > "$RUNNER_TEMP/git-status.txt"
+-          git rev-parse HEAD > "$RUNNER_TEMP/commit.txt"
+-      - uses: actions/upload-artifact@v4
+-        if: always()
+-        with:
+-          name: gpt6-validation-workspace
+-          retention-days: 3
+-          path: |
+-            ${{ runner.temp }}/gpt6-source.tar.gz
+-            ${{ runner.temp }}/validation.log
+-            ${{ runner.temp }}/git-status.txt
+-            ${{ runner.temp }}/commit.txt
+diff --git a/README.zh-CN.md b/README.zh-CN.md
+index 5752409..da608e4 100644
+--- a/README.zh-CN.md
++++ b/README.zh-CN.md
+@@ -64,6 +64,22 @@ Codex 会保留原生任务、上下文生命周期、界面和工具 harness。
+ 设置及 OpenAI [临时聊天政策](https://help.openai.com/en/articles/8914046-temporary-chat-faq)
+ 约束。本项目为非官方项目；用户仍需自行遵守适用的 OpenAI 条款和工作区政策。
+ 
++## 本分支：GPT-6 Pro 与本地模型列表
++
++本分支保留 `chatgpt-web/pro` 这个已有模型 ID，但现在明确路由到 **GPT-6 Pro（Astra）**，
++不再只把 Sol 的 Pro 档位改一个显示名称。浏览器会先选择并确认 GPT-6 模型，再设置 Pro 推理档位；
++在发送提示前再次核验模型。账户尚未开放 GPT-6、选项被禁用或 UI 无法确认时会明确报错，
++不会静默改用 GPT-5.6 Sol Pro。官方的产品名称与开放说明见
++[GPT-5.6 and GPT-6 Pro in ChatGPT](https://help.openai.com/en/articles/20001354-gpt-56-in-chatgpt)。
++
++本地 Codex 原生列表中的 **Luna、Terra** 被隐藏，保留 Sol 和原生 Astra；隐藏不删除原生协议元数据，
++也不会擅自更改正在进行的任务或用户保存的默认模型。Free/Go 的 Web Luna 兼容路由仍保留。
++本分支对付费账户主要显示 Web High、Web Extra High（需 Pro）和 Web GPT-6 Pro（需 Pro，且网页已开放）。
++
++更新此分支源码并重启启动器，再重新打开 Codex / 刷新模型列表；选择 **ChatGPT Web — GPT-6 Pro**。
++仅 `git pull` 不会更新已经安装的上游发行版：源码安装使用 `bun run app`，打包安装需要用此分支重新构建。
++GPT-6 暂沿用现有 Pro 的保守浏览器预算，而非直接套用 API 的上下文窗口；实际网页上限仍需实测。
++
+ ## 快速开始
+ 
+ 安装或更新桌面启动器。若要更新或修复现有安装，请先退出启动器，然后再次运行同一条命令；它会
+diff --git a/src/adapters/chatgpt-web/browser-worker.ts b/src/adapters/chatgpt-web/browser-worker.ts
+index cbfedc1..1b6d85f 100644
+--- a/src/adapters/chatgpt-web/browser-worker.ts
++++ b/src/adapters/chatgpt-web/browser-worker.ts
+@@ -24,6 +24,7 @@ import {
+ import {
+   CHATGPT_WEB_LUNA_MODEL_ID,
+   CHATGPT_WEB_MODEL_ID,
++  CHATGPT_WEB_ASTRA_MODEL_ID,
+   resolveChatGptWebModelMode,
+   type ChatGptWebCapabilities,
+   type ChatGptWebModelMode,
+@@ -59,6 +60,7 @@ import {
+   parseChatGptEffortSliderState,
+ } from "../../chatgpt-session";
+ import { loginVerificationMarkerPath } from "../../browser-login";
++import { selectChatGptWebModelFamily, assertChatGptWebModelFamily } from "./model-family";
+ import {
+   connectLauncherBrowserHost,
+   LauncherBrowserTurnCancelledError,
+@@ -841,7 +843,7 @@ export function assertChatGptWebInputWithinLimits(
+   capabilities: ChatGptWebCapabilities,
+   promptChars?: number,
+ ): void {
+-  if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_LUNA_MODEL_ID) {
++  if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_LUNA_MODEL_ID && modelId !== CHATGPT_WEB_ASTRA_MODEL_ID) {
+     throw new Error(`ChatGPT web context limit is not defined for model: ${modelId}`);
+   }
+   if (
+@@ -904,7 +906,7 @@ export function assertChatGptWebMultipartInputWithinLimits(
+       { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
+     );
+   }
+-  if (modelId !== CHATGPT_WEB_MODEL_ID) {
++  if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_ASTRA_MODEL_ID) {
+     throw new Error(`ChatGPT Bigger Context limit is not defined for model: ${modelId}`);
+   }
+   const { contextWindow } = resolveChatGptWebContextLimits(modelId, effort, capabilities);
+@@ -971,12 +973,13 @@ export function resolveChatGptWebMultipartStagingMode(
+       { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
+     );
+   }
+-  if (modelId !== CHATGPT_WEB_MODEL_ID) {
++  if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_ASTRA_MODEL_ID) {
+     throw new Error(`ChatGPT Bigger Context staging mode is not defined for model: ${modelId}`);
+   }
+-  const efforts: readonly ChatGptWebModelMode["effort"][] = capabilities.proAvailable
+-    ? ["low", "medium", "max"]
+-    : ["low", "medium"];
++  // Astra is Pro-only on the Chat surface. Never stage its context using a different model.
++  const efforts: readonly ChatGptWebModelMode["effort"][] = modelId === CHATGPT_WEB_ASTRA_MODEL_ID
++    ? ["max"]
++    : capabilities.proAvailable ? ["low", "medium", "max"] : ["low", "medium"];
+   const requestedContextWindow = resolveChatGptWebContextLimits(
+     modelId,
+     requestedEffort,
+@@ -2297,6 +2300,11 @@ export class ChatGptBrowserWorker {
+     } finally {
+       waitAbort.abort();
+     }
++    const selectedFamily = await selectChatGptWebModelFamily(page, currentEffort, modelId, captureDiagnostic);
++    const confirmFamily = async (): Promise<void> => {
++      if (selectedFamily) await assertChatGptWebModelFamily(page, currentEffort, selectedFamily);
++    };
++    if (ready !== "slider" && await effortSlider.isVisible().catch(() => false)) ready = "slider";
+     if (ready === "slider") {
+       let sliderState = parseChatGptEffortSliderState(
+         await effortSlider.getAttribute("aria-valuemin"),
+@@ -2309,7 +2317,8 @@ export class ChatGptBrowserWorker {
+           { status: 502, errorType: "server_error", code: "upstream_server_error", retryable: false },
+         );
+       }
+-      const targetValue = sliderState.min + uiEffortIndex;
++      const targetValue = selectedFamily === "astra" && sliderState.min === sliderState.max
++        ? sliderState.max : sliderState.min + uiEffortIndex;
+       if (targetValue > sliderState.max) {
+         throw new ChatGptWebAdapterError(
+           `ChatGPT effort slider does not expose item index ${uiEffortIndex}`
+@@ -2342,6 +2351,7 @@ export class ChatGptBrowserWorker {
+           );
+         }
+       }
++      await confirmFamily();
+       await captureDiagnostic?.("effort-selected");
+       await page.keyboard.press("Escape");
+       return mode;
+@@ -2351,6 +2361,7 @@ export class ChatGptBrowserWorker {
+       throw new Error(`ChatGPT effort item index ${uiEffortIndex} has no semantic checked state`);
+     }
+     if (selected === "true") {
++      await confirmFamily();
+       await captureDiagnostic?.("effort-selected");
+       await page.keyboard.press("Escape");
+       return mode;
+@@ -2375,6 +2386,7 @@ export class ChatGptBrowserWorker {
+       }
+       confirmed = await effortChoice.getAttribute("aria-checked");
+       if (confirmed === "true") {
++        await confirmFamily();
+         await captureDiagnostic?.("effort-selected");
+         await page.keyboard.press("Escape");
+         return mode;
+diff --git a/src/adapters/chatgpt-web/model-family.ts b/src/adapters/chatgpt-web/model-family.ts
+new file mode 100644
+index 0000000..52612d5
+--- /dev/null
++++ b/src/adapters/chatgpt-web/model-family.ts
+@@ -0,0 +1,128 @@
++import type { Locator, Page } from "playwright-core";
++import { CHATGPT_EFFORT_MENU_SELECTOR } from "../../chatgpt-session";
++import { CHATGPT_WEB_ASTRA_BACKEND_MODEL, CHATGPT_WEB_BACKEND_MODEL } from "../../chatgpt-web-models";
++import { ChatGptWebAdapterError } from "./adapter-error";
++
++export type ChatGptWebModelFamily = "sol" | "astra";
++
++// Model names are product identities, not translated effort labels. Do not accept plain "Pro":
++// both Sol Pro and GPT-6 Pro can occupy the last reasoning-slider position.
++const FAMILY_LABELS: Record<ChatGptWebModelFamily, RegExp> = {
++  sol: /^(?:GPT[-\s\u2010-\u2015]*5\.6(?:\s+Sol)?(?:\s+Pro)?|Sol(?:\s+Pro)?)$/i,
++  astra: /^(?:GPT[-\s\u2010-\u2015]*6(?:\s+Astra)?(?:\s+Pro)?|Astra(?:\s+Pro)?)$/i,
++};
++
++export function chatGptWebModelFamilyFromLabel(label: string): ChatGptWebModelFamily | undefined {
++  // A menu row can have a descriptive second line. Match its complete title, never a substring.
++  const title = label.trim().split(/\r?\n/)[0]?.trim().replace(/\s+/g, " ") ?? "";
++  return (Object.keys(FAMILY_LABELS) as ChatGptWebModelFamily[])
++    .find(family => FAMILY_LABELS[family].test(title));
++}
++
++function familyError(message: string, mismatch = false): ChatGptWebAdapterError {
++  return new ChatGptWebAdapterError(message, {
++    status: mismatch ? 502 : 400,
++    errorType: mismatch ? "upstream_error" : "invalid_request_error",
++    code: mismatch ? "chatgpt_model_mismatch" : "chatgpt_model_unavailable",
++    retryable: false,
++  });
++}
++
++async function openModelMenu(page: Page, trigger: Locator): Promise<Locator> {
++  const menu = page.locator(CHATGPT_EFFORT_MENU_SELECTOR).last();
++  if (!await menu.isVisible()) await trigger.click({ force: true });
++  await menu.waitFor({ state: "visible", timeout: 5_000 });
++  return menu;
++}
++
++interface FamilyRow { family: ChatGptWebModelFamily; row: Locator }
++
++async function inspectFamilyRows(menu: Locator): Promise<{ rows: FamilyRow[]; unknownModel: boolean }> {
++  const candidates = menu.getByRole("menuitemradio").filter({ visible: true });
++  const rows: FamilyRow[] = [];
++  let unknownModel = false;
++  for (let index = 0; index < await candidates.count(); index += 1) {
++    const row = candidates.nth(index);
++    const text = await row.innerText();
++    const ariaLabel = await row.getAttribute("aria-label");
++    let family = chatGptWebModelFamilyFromLabel(ariaLabel ?? "") ?? chatGptWebModelFamilyFromLabel(text);
++    // Accessible names may combine a title with a description. An exact nested title is also
++    // evidence; arbitrary text mentioning a model in a paragraph is deliberately not accepted.
++    if (!family) {
++      for (const candidate of ["sol", "astra"] as const) {
++        if (await row.getByText(FAMILY_LABELS[candidate]).count() === 1) {
++          family = candidate;
++          break;
++        }
++      }
++    }
++    if (family) rows.push({ family, row });
++    else if (/^GPT[-\s\u2010-\u2015]*\d/i.test((ariaLabel ?? text).trim())) unknownModel = true;
++  }
++  return { rows, unknownModel };
++}
++
++async function uniqueFamilyRow(menu: Locator, family: ChatGptWebModelFamily): Promise<Locator> {
++  const { rows } = await inspectFamilyRows(menu);
++  const matches = rows.filter(candidate => candidate.family === family);
++  if (matches.length !== 1) {
++    throw familyError(
++      `ChatGPT did not expose exactly one ${family === "astra" ? "GPT-6 Astra / GPT-6 Pro" : "GPT-5.6 Sol"} model row`
++      + ` (found ${matches.length}). Verify account access and the model picker; no other model will be used.`,
++    );
++  }
++  return matches[0]!.row;
++}
++
++/** Confirm identity without repairing it: changing a family here could reset the selected effort. */
++export async function assertChatGptWebModelFamily(
++  page: Page,
++  trigger: Locator,
++  family: ChatGptWebModelFamily,
++): Promise<void> {
++  const menu = await openModelMenu(page, trigger);
++  const row = await uniqueFamilyRow(menu, family);
++  const { rows } = await inspectFamilyRows(menu);
++  if (await row.getAttribute("aria-checked") !== "true"
++    || (await Promise.all(rows.filter(candidate => candidate.family !== family)
++      .map(candidate => candidate.row.getAttribute("aria-checked")))).includes("true")) {
++    throw familyError(`ChatGPT did not confirm the selected ${family} model after effort selection; refusing to send the prompt.`, true);
++  }
++}
++
++/** Select an explicit family before effort selection; old effort-only Sol pickers remain supported. */
++export async function selectChatGptWebModelFamily(
++  page: Page,
++  trigger: Locator,
++  modelId: string,
++  captureDiagnostic?: (checkpoint: string) => Promise<void>,
++  confirmationTimeoutMs = 5_000,
++): Promise<ChatGptWebModelFamily | undefined> {
++  const family = modelId === CHATGPT_WEB_ASTRA_BACKEND_MODEL ? "astra"
++    : modelId === CHATGPT_WEB_BACKEND_MODEL ? "sol" : undefined;
++  if (!family) throw familyError(`Unsupported ChatGPT model-family selection: ${modelId}`);
++  const menu = await openModelMenu(page, trigger);
++  const inspected = await inspectFamilyRows(menu);
++  if (family === "sol" && inspected.rows.length === 0 && !inspected.unknownModel) return undefined;
++  const row = await uniqueFamilyRow(menu, family);
++  if (await row.getAttribute("aria-disabled") === "true" || !await row.isEnabled()) {
++    throw familyError(`ChatGPT ${family} is disabled for this account; no fallback will be used.`);
++  }
++  const checked = await row.getAttribute("aria-checked");
++  if (checked !== "true" && checked !== "false") {
++    throw familyError(`ChatGPT ${family} model row has no semantic checked state.`, true);
++  }
++  if (checked === "false") {
++    await row.click({ force: true });
++    const deadline = Date.now() + confirmationTimeoutMs;
++    while (true) {
++      const refreshed = await uniqueFamilyRow(await openModelMenu(page, trigger), family);
++      if (await refreshed.getAttribute("aria-checked") === "true") break;
++      if (Date.now() >= deadline) throw familyError(`ChatGPT did not switch to ${family}; refusing to send the prompt.`, true);
++      await new Promise(resolve => setTimeout(resolve, 50));
++    }
++  }
++  await assertChatGptWebModelFamily(page, trigger, family);
++  await captureDiagnostic?.(`model-family-${family}-confirmed`);
++  return family;
++}
+diff --git a/src/adapters/chatgpt-web/model.ts b/src/adapters/chatgpt-web/model.ts
+index de58f82..050b2b0 100644
+--- a/src/adapters/chatgpt-web/model.ts
++++ b/src/adapters/chatgpt-web/model.ts
+@@ -1,9 +1,11 @@
+ import {
+   CHATGPT_WEB_BACKEND_MODEL,
++  CHATGPT_WEB_ASTRA_BACKEND_MODEL,
+   CHATGPT_WEB_LUNA_BACKEND_MODEL,
+ } from "../../chatgpt-web-models";
+ 
+ export const CHATGPT_WEB_MODEL_ID = CHATGPT_WEB_BACKEND_MODEL;
++export const CHATGPT_WEB_ASTRA_MODEL_ID = CHATGPT_WEB_ASTRA_BACKEND_MODEL;
+ export const CHATGPT_WEB_LUNA_MODEL_ID = CHATGPT_WEB_LUNA_BACKEND_MODEL;
+ 
+ export interface ChatGptWebCapabilities {
+@@ -15,7 +17,7 @@ export interface ChatGptWebCapabilities {
+ export interface ChatGptWebModelMode {
+   modelId: string;
+   effort: "low" | "medium" | "high" | "xhigh" | "max";
+-  displayLabel: "Luna" | "Think" | "Instant" | "Medium" | "High" | "Extra High" | "Pro";
++  displayLabel: "Luna" | "Think" | "Instant" | "Medium" | "High" | "Extra High" | "Pro" | "GPT-6 Pro";
+   uiEffortIndex: 0 | 1 | 2 | 3 | 4 | null;
+   thinkEnabled: boolean;
+   localTools: boolean;
+@@ -44,6 +46,17 @@ export function resolveChatGptWebModelMode(
+       localTools: capabilities.localToolsEnabled,
+     };
+   }
++  if (modelId === CHATGPT_WEB_ASTRA_MODEL_ID) {
++    if (!capabilities.solAvailable || !capabilities.proAvailable) {
++      throw new Error("ChatGPT GPT-6 Pro is not available for this account");
++    }
++    const effort = reasoning ?? "max";
++    if (effort !== "max") throw new Error(`ChatGPT GPT-6 Pro effort is not supported: ${effort}`);
++    return {
++      modelId, effort, displayLabel: "GPT-6 Pro", uiEffortIndex: 4,
++      thinkEnabled: false, localTools: capabilities.localToolsEnabled,
++    };
++  }
+   if (modelId !== CHATGPT_WEB_MODEL_ID) {
+     throw new Error(`ChatGPT web model is not supported: ${modelId}`);
+   }
+diff --git a/src/adapters/chatgpt-web/usage.ts b/src/adapters/chatgpt-web/usage.ts
+index b824d2c..f564b3f 100644
+--- a/src/adapters/chatgpt-web/usage.ts
++++ b/src/adapters/chatgpt-web/usage.ts
+@@ -1,6 +1,7 @@
+ import { estimateTokens } from "../../lib/token-estimate";
+ import {
+   CHATGPT_WEB_BACKEND_MODEL,
++  CHATGPT_WEB_ASTRA_BACKEND_MODEL,
+   resolveChatGptWebContextLimits,
+ } from "../../chatgpt-web-models";
+ import type { CodexParsedRequest, CodexUsage } from "../../types";
+@@ -62,7 +63,7 @@ export function resolveBiggerContextMultipartParts(
+   const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
+ 
+   const onePartLimit = resolveChatGptWebContextLimits(
+-    CHATGPT_WEB_BACKEND_MODEL,
++    parsed.modelId === CHATGPT_WEB_ASTRA_BACKEND_MODEL ? CHATGPT_WEB_ASTRA_BACKEND_MODEL : CHATGPT_WEB_BACKEND_MODEL,
+     mode.effort,
+     capabilities,
+   ).autoCompactTokenLimit;
+diff --git a/src/chatgpt-web-models.ts b/src/chatgpt-web-models.ts
+index 32dafd9..74d9c48 100644
+--- a/src/chatgpt-web-models.ts
++++ b/src/chatgpt-web-models.ts
+@@ -1,9 +1,12 @@
+ export const CHATGPT_WEB_MODEL_PREFIX = "chatgpt-web/";
+ export const CHATGPT_WEB_BACKEND_MODEL = "gpt-5.6-sol";
++// Internal browser route identity, not an undocumented ChatGPT HTTP API model parameter.
++export const CHATGPT_WEB_ASTRA_BACKEND_MODEL = "gpt-6-astra";
+ export const CHATGPT_WEB_LUNA_BACKEND_MODEL = "gpt-5.6-luna";
+ 
+ export type ChatGptWebBackendModel =
+   | typeof CHATGPT_WEB_BACKEND_MODEL
++  | typeof CHATGPT_WEB_ASTRA_BACKEND_MODEL
+   | typeof CHATGPT_WEB_LUNA_BACKEND_MODEL;
+ 
+ export type ChatGptWebCodexEffort = "low" | "medium" | "high" | "xhigh" | "ultra";
+@@ -67,12 +70,26 @@ function contextLimits(
+   };
+ }
+ 
++function assertAstraMode(
++  backendModel: ChatGptWebBackendModel,
++  effort: ChatGptWebAdapterEffort,
++  capabilities: ChatGptWebAccountCapabilities,
++): void {
++  if (backendModel !== CHATGPT_WEB_ASTRA_BACKEND_MODEL) return;
++  if (!capabilities.solAvailable || !capabilities.proAvailable || effort !== "max") {
++    throw new Error("ChatGPT GPT-6 Pro requires a Pro-capable account and the max browser effort");
++  }
++}
++
+ /** Resolve the product limit for the selected visible ChatGPT mode. */
+ export function resolveChatGptWebContextLimits(
+   backendModel: ChatGptWebBackendModel,
+   effort: ChatGptWebAdapterEffort,
+   capabilities: ChatGptWebAccountCapabilities,
+ ): ChatGptWebContextLimits {
++  assertAstraMode(backendModel, effort, capabilities);
++  // Astra starts with the existing conservative Pro browser budget. Its API context window is
++  // not evidence of ChatGPT's composer/transport limits; do not advertise an unmeasured increase.
+   if (backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) {
+     // Luna carries continuity through a private checkpoint on every completed browser turn. Codex
+     // internally clamps this field to 90% of the model window, but the reported active usage is the
+@@ -114,6 +131,7 @@ export function resolveChatGptWebTransportLimits(
+   effort: ChatGptWebAdapterEffort,
+   capabilities: ChatGptWebAccountCapabilities,
+ ): ChatGptWebTransportLimits {
++  assertAstraMode(backendModel, effort, capabilities);
+   if (backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) return {};
+   if (!capabilities.proAvailable) {
+     if (effort === "low") {
+@@ -231,8 +249,8 @@ export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebModelRoute[] = [
+   {
+     slug: "chatgpt-web/pro",
+     displayName: "ChatGPT Web — GPT-6 Pro",
+-    description: "ChatGPT Pro slot through the native Codex harness; uses GPT-6 Pro (GPT-6 Astra) when the account rollout exposes it.",
+-    backendModel: CHATGPT_WEB_BACKEND_MODEL,
++    description: "GPT-6 Pro (GPT-6 Astra) through ChatGPT Web. Requires the visible GPT-6 model in the account picker; never falls back to Sol Pro.",
++    backendModel: CHATGPT_WEB_ASTRA_BACKEND_MODEL,
+     codexEffort: "ultra",
+     adapterEffort: "max",
+     requiresPro: true,
+diff --git a/src/config.ts b/src/config.ts
+index 1444c64..1d5bc91 100644
+--- a/src/config.ts
++++ b/src/config.ts
+@@ -4,6 +4,7 @@ import { homedir } from "node:os";
+ import { basename, delimiter, dirname, isAbsolute, join, resolve, sep, win32 } from "node:path";
+ import { tmpdir } from "node:os";
+ import type { CodexProviderConfig } from "./types";
++import { CHATGPT_WEB_ASTRA_BACKEND_MODEL, CHATGPT_WEB_BACKEND_MODEL, CHATGPT_WEB_LUNA_BACKEND_MODEL } from "./chatgpt-web-models";
+ import { VERSION } from "./version";
+ 
+ export type RuntimeMode = "browser-only" | "full";
+@@ -437,8 +438,9 @@ export function saveConfig(config: AppConfig): void {
+ }
+ 
+ export function providerConfig(config: AppConfig): CodexProviderConfig {
+-  const model = config.solAvailable ? "gpt-5.6-sol" : "gpt-5.6-luna";
+-  const models = [model];
++  const model = config.solAvailable ? CHATGPT_WEB_BACKEND_MODEL : CHATGPT_WEB_LUNA_BACKEND_MODEL;
++  const astraAvailable = config.solAvailable && config.proAvailable;
++  const models = [model, ...(astraAvailable ? [CHATGPT_WEB_ASTRA_BACKEND_MODEL] : [])];
+   const efforts = config.solAvailable
+     ? ["low", "medium", "high", "xhigh", ...(config.proAvailable ? ["max"] : [])]
+     : ["low", "medium"];
+@@ -450,8 +452,14 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
+     defaultModel: model,
+     contextWindow: config.contextWindow,
+     modelInputModalities: Object.fromEntries(models.map(model => [model, ["text", "image"]])),
+-    modelReasoningEfforts: { [model]: efforts },
+-    modelDefaultReasoningEfforts: { [model]: config.solAvailable ? "high" : "low" },
++    modelReasoningEfforts: {
++      [model]: efforts,
++      ...(astraAvailable ? { [CHATGPT_WEB_ASTRA_BACKEND_MODEL]: ["max"] } : {}),
++    },
++    modelDefaultReasoningEfforts: {
++      [model]: config.solAvailable ? "high" : "low",
++      ...(astraAvailable ? { [CHATGPT_WEB_ASTRA_BACKEND_MODEL]: "max" } : {}),
++    },
+     noReasoningModels: [],
+     chatgptWeb: {
+       appName: config.appName,
+diff --git a/src/model-catalog.ts b/src/model-catalog.ts
+index 2ee77a6..5c2b66d 100644
+--- a/src/model-catalog.ts
++++ b/src/model-catalog.ts
+@@ -35,8 +35,13 @@ function shouldExposeNativeModel(value: unknown): boolean {
+ 
+ function shouldHideNativeSelectorModel(value: unknown): boolean {
+   const modelSlug = slug(value);
+-  return modelSlug !== undefined
+-    && /^gpt-\d+(?:\.\d+)?-(?:luna|terra)(?:$|[-.])/i.test(modelSlug);
++  if (modelSlug !== undefined
++    && /(?:^|\/)(?:gpt-\d+(?:\.\d+)?-)?(?:luna|terra)(?:$|[-.])/i.test(modelSlug)) return true;
++  // Also cover catalog aliases with an opaque slug and an explicit model-family display name.
++  const name = value && typeof value === "object" && !Array.isArray(value)
++    ? (value as JsonObject).display_name : undefined;
++  return typeof name === "string"
++    && /^(?:(?:gpt[-\s]*)?\d+(?:\.\d+)?[-\s]+)?(?:luna|terra)(?:$|[\s.-])/i.test(name.trim());
+ }
+ 
+ function reasoningLevel(template: JsonObject, effort: string, description: string): JsonObject {
+diff --git a/tests/chatgpt-web-models.test.ts b/tests/chatgpt-web-models.test.ts
+index 03ecf51..e64e169 100644
+--- a/tests/chatgpt-web-models.test.ts
++++ b/tests/chatgpt-web-models.test.ts
+@@ -3,6 +3,7 @@ import { chatGptConversationKey } from "../src/adapters/chatgpt-web/conversation
+ import {
+   availableChatGptWebModelRoutes,
+   CHATGPT_WEB_BACKEND_MODEL,
++  CHATGPT_WEB_ASTRA_BACKEND_MODEL,
+   CHATGPT_WEB_LUNA_BACKEND_MODEL,
+   CHATGPT_WEB_LUNA_MODEL_ROUTE,
+   CHATGPT_WEB_LUNA_MODEL_ROUTES,
+@@ -179,6 +180,7 @@ describe("fixed ChatGPT Web model routes", () => {
+     config.proAvailable = true;
+     const request = parsed("chatgpt-web/pro", "low");
+     expect(routeChatGptWebRequest(request, config).adapterEffort).toBe("max");
++    expect(request.modelId).toBe(CHATGPT_WEB_ASTRA_BACKEND_MODEL);
+     expect(request.options.reasoning).toBe("max");
+     expect(() => routeChatGptWebRequest(parsed("chatgpt-web/not-enabled"), config))
+       .toThrow("model is not enabled");
+diff --git a/tests/gpt6-catalog.test.ts b/tests/gpt6-catalog.test.ts
+index 5fe0317..a02b679 100644
+--- a/tests/gpt6-catalog.test.ts
++++ b/tests/gpt6-catalog.test.ts
+@@ -44,3 +44,26 @@ test("native Luna and Terra rows are hidden without suppressing Sol or GPT-6 Ast
+   expect(visibility.get("gpt-5.6-terra")).toBe("hide");
+   expect(visibility.get("gpt-6-astra")).toBe("list");
+ });
++
++test("local picker filters Luna/Terra aliases and dated variants without mutating upstream metadata", () => {
++  const hidden = [
++    ["gpt-5.6-luna-preview", "5.6 Luna Preview"],
++    ["GPT-5.6-TERRA", "5.6 Terra"],
++    ["luna", "Luna"],
++    ["openai/terra-preview", "Terra Preview"],
++    ["opaque-native-id", "GPT-5.6 Luna"],
++  ];
++  const input = { models: [listModel("gpt-5.6-sol", "5.6 Sol"),
++    ...hidden.map(([slug, name]) => listModel(slug!, name!)),
++    listModel("terraform-assistant", "Terraform assistant"),
++    listModel("gpt-6-astra", "6 Astra"),
++  ] };
++  const original = structuredClone(input);
++  const output = augmentNativeModelCatalog(input, defaultConfig("full"));
++  const models = output.models as Array<Record<string, unknown>>;
++  for (const [slug] of hidden) expect(models.find(model => model.slug === slug)?.visibility).toBe("hide");
++  expect(models.find(model => model.slug === "gpt-6-astra")?.visibility).toBe("list");
++  expect(models.find(model => model.slug === "terraform-assistant")?.visibility).toBe("list");
++  expect(input).toEqual(original);
++  expect(models.find(model => model.slug === "luna")?.supported_reasoning_levels).toEqual(original.models[3]?.supported_reasoning_levels);
++});
+diff --git a/tests/gpt6-model-family.test.ts b/tests/gpt6-model-family.test.ts
+new file mode 100644
+index 0000000..74ca9b8
+--- /dev/null
++++ b/tests/gpt6-model-family.test.ts
+@@ -0,0 +1,178 @@
++import { expect, test } from "bun:test";
++import { CHATGPT_WEB_ASTRA_BACKEND_MODEL, CHATGPT_WEB_BACKEND_MODEL, requireChatGptWebModelRoute, resolveChatGptWebContextLimits, resolveChatGptWebTransportLimits } from "../src/chatgpt-web-models";
++import { resolveChatGptWebModelMode } from "../src/adapters/chatgpt-web/model";
++import { assertChatGptWebModelFamily, chatGptWebModelFamilyFromLabel, selectChatGptWebModelFamily } from "../src/adapters/chatgpt-web/model-family";
++import { assertChatGptWebInputWithinLimits, resolveChatGptWebMultipartStagingMode } from "../src/adapters/chatgpt-web/browser-worker";
++import { defaultConfig, providerConfig } from "../src/config";
++
++const pro = { solAvailable: true, proAvailable: true, localToolsEnabled: true };
++
++interface RowState {
++  text: string;
++  checked?: string;
++  ariaLabel?: string;
++  title?: string;
++  disabled?: boolean;
++}
++
++function picker(initial: RowState[], options: { sticky?: boolean; closeOnClick?: boolean } = {}) {
++  const state = initial.map(row => ({ ...row }));
++  let visible = true;
++  let opens = 0;
++  const clicks: string[] = [];
++  const rows = state.map(row => ({
++    innerText: async () => row.text,
++    getAttribute: async (name: string) => name === "aria-label" ? row.ariaLabel ?? null
++      : name === "aria-disabled" ? (row.disabled ? "true" : "false")
++      : name === "aria-checked" ? row.checked ?? null : null,
++    isEnabled: async () => !row.disabled,
++    getByText: (pattern: RegExp) => ({ count: async () => row.title && pattern.test(row.title) ? 1 : 0 }),
++    click: async () => {
++      clicks.push(row.text);
++      if (!options.sticky) {
++        for (const other of state) other.checked = other === row ? "true" : "false";
++      }
++      if (options.closeOnClick) visible = false;
++    },
++  }));
++  const list = {
++    filter() { return this; },
++    count: async () => rows.length,
++    nth: (index: number) => rows[index],
++  };
++  const menu = {
++    last() { return this; },
++    isVisible: async () => visible,
++    waitFor: async () => { if (!visible) throw new Error("menu closed"); },
++    getByRole: (role: string) => { expect(role).toBe("menuitemradio"); return list; },
++  };
++  return {
++    state, clicks,
++    get opens() { return opens; },
++    page: { locator: () => menu } as never,
++    trigger: { click: async () => { visible = true; opens += 1; } } as never,
++  };
++}
++
++for (const label of ["GPT-6", "GPT-6 Pro", "GPT-6 Astra", "GPT-6 Astra Pro", "GPT‑6 Pro", "Astra", " GPT-6 Pro\nMost capable model "]) {
++  test(`recognizes the complete Astra product title: ${label}`, () => {
++    expect(chatGptWebModelFamilyFromLabel(label)).toBe("astra");
++  });
++}
++for (const label of ["Pro", "GPT-60", "GPT-6.1", "GPT-6 mini", "Use GPT-6 Pro", "GPT-5.6 Luna"]) {
++  test(`does not mistake another label for Astra: ${label}`, () => {
++    expect(chatGptWebModelFamilyFromLabel(label)).toBeUndefined();
++  });
++}
++
++test("the stable Pro slug routes to Astra, not the Sol Pro slot", () => {
++  const route = requireChatGptWebModelRoute("chatgpt-web/pro", pro);
++  expect(route.backendModel).toBe(CHATGPT_WEB_ASTRA_BACKEND_MODEL);
++  expect(route.adapterEffort).toBe("max");
++  expect(resolveChatGptWebModelMode(route.backendModel, route.adapterEffort, pro)).toMatchObject({
++    modelId: "gpt-6-astra", displayLabel: "GPT-6 Pro", uiEffortIndex: 4, localTools: true,
++  });
++  expect(resolveChatGptWebModelMode(route.backendModel, undefined, pro).effort).toBe("max");
++  expect(() => resolveChatGptWebModelMode(route.backendModel, "high", pro)).toThrow("effort is not supported");
++  expect(() => resolveChatGptWebModelMode(route.backendModel, "max", { ...pro, proAvailable: false })).toThrow("not available");
++});
++
++test("Astra provider registration is Pro-gated and leaves the Sol default unchanged", () => {
++  const config = defaultConfig("full");
++  expect(providerConfig(config).models).not.toContain(CHATGPT_WEB_ASTRA_BACKEND_MODEL);
++  config.proAvailable = true;
++  const provider = providerConfig(config);
++  expect(provider.models).toContain(CHATGPT_WEB_ASTRA_BACKEND_MODEL);
++  expect(provider.defaultModel).toBe(CHATGPT_WEB_BACKEND_MODEL);
++  expect(provider.modelReasoningEfforts?.[CHATGPT_WEB_ASTRA_BACKEND_MODEL]).toEqual(["max"]);
++  expect(provider.modelDefaultReasoningEfforts?.[CHATGPT_WEB_ASTRA_BACKEND_MODEL]).toBe("max");
++});
++
++test("Astra budgets are conservative Pro browser budgets, not the API's model window", () => {
++  expect(resolveChatGptWebContextLimits(CHATGPT_WEB_ASTRA_BACKEND_MODEL, "max", pro))
++    .toEqual(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "max", pro));
++  expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_ASTRA_BACKEND_MODEL, "max", pro))
++    .toEqual(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, "max", pro));
++  expect(() => resolveChatGptWebContextLimits(CHATGPT_WEB_ASTRA_BACKEND_MODEL, "high", pro)).toThrow("max browser effort");
++  expect(() => assertChatGptWebInputWithinLimits(9_000, 808, CHATGPT_WEB_ASTRA_BACKEND_MODEL, "max", pro, 2_000)).not.toThrow();
++  expect(() => assertChatGptWebInputWithinLimits(120_000, 110_000, CHATGPT_WEB_ASTRA_BACKEND_MODEL, "max", pro)).toThrow("message boundary");
++  const stage = resolveChatGptWebMultipartStagingMode(CHATGPT_WEB_ASTRA_BACKEND_MODEL, pro, "max", 1_000, 4_000);
++  expect(stage).toMatchObject({ modelId: CHATGPT_WEB_ASTRA_BACKEND_MODEL, effort: "max" });
++});
++
++test("explicit Astra selection reopens a closed menu and confirms semantic identity", async () => {
++  const ui = picker([
++    { text: "GPT-5.6 Sol", checked: "true" },
++    { text: "GPT-6 Astra", checked: "false" },
++  ], { closeOnClick: true });
++  const diagnostics: string[] = [];
++  expect(await selectChatGptWebModelFamily(ui.page, ui.trigger, CHATGPT_WEB_ASTRA_BACKEND_MODEL,
++    async checkpoint => { diagnostics.push(checkpoint); })).toBe("astra");
++  expect(ui.clicks).toEqual(["GPT-6 Astra"]);
++  expect(ui.opens).toBe(1);
++  expect(diagnostics).toEqual(["model-family-astra-confirmed"]);
++});
++
++test("an already selected Astra row is verified without clicking again", async () => {
++  const ui = picker([{ text: "GPT-6 Pro", checked: "true" }]);
++  await selectChatGptWebModelFamily(ui.page, ui.trigger, CHATGPT_WEB_ASTRA_BACKEND_MODEL);
++  expect(ui.clicks).toEqual([]);
++});
++
++test("combined accessible descriptions can be identified by an exact nested model title", async () => {
++  const ui = picker([{ text: "GPT-6 Astra Most capable model", title: "GPT-6 Astra", checked: "true" }]);
++  expect(await selectChatGptWebModelFamily(ui.page, ui.trigger, CHATGPT_WEB_ASTRA_BACKEND_MODEL)).toBe("astra");
++});
++
++test("plain Pro without Astra never masquerades as GPT-6", async () => {
++  const ui = picker([{ text: "Pro", checked: "true" }]);
++  await expect(selectChatGptWebModelFamily(ui.page, ui.trigger, CHATGPT_WEB_ASTRA_BACKEND_MODEL))
++    .rejects.toMatchObject({ code: "chatgpt_model_unavailable", retryable: false });
++  expect(ui.clicks).toEqual([]);
++});
++
++test("unavailable rollout and disabled Astra fail without falling back to Sol", async () => {
++  for (const rows of [
++    [{ text: "GPT-5.6 Sol", checked: "true" }],
++    [{ text: "GPT-5.6 Sol", checked: "true" }, { text: "GPT-6 Pro", checked: "false", disabled: true }],
++  ]) {
++    const ui = picker(rows);
++    await expect(selectChatGptWebModelFamily(ui.page, ui.trigger, CHATGPT_WEB_ASTRA_BACKEND_MODEL))
++      .rejects.toMatchObject({ code: "chatgpt_model_unavailable", retryable: false });
++    expect(ui.clicks).toEqual([]);
++  }
++});
++
++test("duplicate, uncheckable, or stuck Astra controls fail closed", async () => {
++  for (const rows of [
++    [{ text: "GPT-6 Pro", checked: "true" }, { text: "GPT-6 Astra", checked: "false" }],
++    [{ text: "GPT-6 Pro" }],
++    [{ text: "GPT-6 Pro", checked: "false" }],
++  ]) {
++    const ui = picker(rows, { sticky: true });
++    await expect(selectChatGptWebModelFamily(ui.page, ui.trigger, CHATGPT_WEB_ASTRA_BACKEND_MODEL, undefined, 0)).rejects.toThrow();
++  }
++});
++
++test("post-effort verification rejects a model switch rather than repairing it silently", async () => {
++  const ui = picker([{ text: "GPT-5.6 Sol", checked: "false" }, { text: "GPT-6 Pro", checked: "true" }]);
++  await selectChatGptWebModelFamily(ui.page, ui.trigger, CHATGPT_WEB_ASTRA_BACKEND_MODEL);
++  ui.state[0]!.checked = "true";
++  ui.state[1]!.checked = "false";
++  await expect(assertChatGptWebModelFamily(ui.page, ui.trigger, "astra"))
++    .rejects.toMatchObject({ code: "chatgpt_model_mismatch", retryable: false });
++  expect(ui.clicks).toEqual([]);
++});
++
++test("Sol routes explicitly leave Astra selected by a previous chat", async () => {
++  const ui = picker([{ text: "GPT-6 Astra", checked: "true" }, { text: "GPT-5.6 Sol", checked: "false" }]);
++  expect(await selectChatGptWebModelFamily(ui.page, ui.trigger, CHATGPT_WEB_BACKEND_MODEL)).toBe("sol");
++  expect(ui.clicks).toEqual(["GPT-5.6 Sol"]);
++});
++
++test("legacy effort-only Sol pickers still work, but unknown model families do not", async () => {
++  const legacy = picker([{ text: "High", checked: "true" }, { text: "Pro", checked: "false" }]);
++  expect(await selectChatGptWebModelFamily(legacy.page, legacy.trigger, CHATGPT_WEB_BACKEND_MODEL)).toBeUndefined();
++  const changed = picker([{ text: "GPT-7", checked: "true" }]);
++  await expect(selectChatGptWebModelFamily(changed.page, changed.trigger, CHATGPT_WEB_BACKEND_MODEL)).rejects.toThrow("no other model");
++});
