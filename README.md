@@ -69,6 +69,26 @@ processed by OpenAI and are subject to the account's settings and OpenAI's
 is unofficial; users remain responsible for complying with applicable OpenAI terms and workspace
 policies.
 
+## This fork: GPT-6 Pro and the local model picker
+
+The existing `chatgpt-web/pro` model ID now explicitly routes to **GPT-6 Pro (Astra)**,
+instead of merely relabeling Sol's Pro effort. The browser selects and confirms the GPT-6 model
+before setting Pro effort, then checks the model again before sending the prompt. If GPT-6 has
+not rolled out to the account, is disabled, or cannot be verified in the UI, the request fails
+explicitly instead of silently using GPT-5.6 Sol Pro. See the official product and availability notes:
+[GPT-5.6 and GPT-6 Pro in ChatGPT](https://help.openai.com/en/articles/20001354-gpt-56-in-chatgpt).
+
+Native **Luna and Terra** are hidden from the local Codex picker; Sol and native Astra remain.
+Hiding rows preserves native protocol metadata and does not alter active tasks or saved default
+models. The Free/Go Web Luna compatibility routes remain available. For paid accounts, this fork
+primarily lists Web High, Web Extra High (requires Pro), and Web GPT-6 Pro (requires Pro and Web access).
+
+Update this fork's source, restart the launcher, then fully restart Codex to refresh its model list
+and select **ChatGPT Web — GPT-6 Pro**. A `git pull` does not update an installed upstream release:
+use `bun run app` for a source installation, or rebuild the packaged launcher from this fork.
+GPT-6 initially uses the existing conservative Pro browser budget, not the API context window;
+the actual Web limits still need live measurement.
+
 ## Quick start
 
 Install or update the desktop launcher. To update or repair an existing installation, quit the

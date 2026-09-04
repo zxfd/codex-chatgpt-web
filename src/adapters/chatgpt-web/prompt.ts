@@ -397,7 +397,7 @@ export function chatGptReadOnlyContextWarning(
   if (isChatGptWebZeroRiskBackendModel(parsed.modelId)) return undefined;
   const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
   if (mode.localTools) return undefined;
-  const label = mode.displayLabel === "Pro" ? "ChatGPT Pro" : `ChatGPT Web ${mode.displayLabel}`;
+  const label = mode.effort === "max" ? "ChatGPT Pro" : `ChatGPT Web ${mode.displayLabel}`;
   const hasLocalEvidence = parsed.context.messages.some(message =>
     message.role === "toolResult"
     || (message.role === "user" && isReadableCompactionSummaryText(message.content))

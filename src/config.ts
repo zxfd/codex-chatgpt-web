@@ -5,10 +5,10 @@ import { basename, delimiter, dirname, isAbsolute, join, resolve, sep, win32 } f
 import { tmpdir } from "node:os";
 import {
   CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL,
-  CHATGPT_WEB_GPT6_BACKEND_MODEL,
   CHATGPT_WEB_ZERO_RISK_PRO_BACKEND_MODEL,
 } from "./chatgpt-web-models";
 import type { CodexProviderConfig } from "./types";
+import { CHATGPT_WEB_ASTRA_BACKEND_MODEL, CHATGPT_WEB_BACKEND_MODEL, CHATGPT_WEB_LUNA_BACKEND_MODEL } from "./chatgpt-web-models";
 import { VERSION } from "./version";
 
 export type RuntimeMode = "browser-only" | "full";
@@ -568,7 +568,7 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
       CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL,
       ...(config.zeroRiskProEnabled ? [CHATGPT_WEB_ZERO_RISK_PRO_BACKEND_MODEL] : []),
     ]
-    : [model, ...(config.solAvailable && config.proAvailable ? [CHATGPT_WEB_GPT6_BACKEND_MODEL] : [])];
+    : [model, ...(config.solAvailable && config.proAvailable ? [CHATGPT_WEB_ASTRA_BACKEND_MODEL] : [])];
   const efforts = manual
     ? ["low"]
     : config.solAvailable
@@ -582,9 +582,9 @@ export function providerConfig(config: AppConfig): CodexProviderConfig {
     defaultModel: model,
     contextWindow: config.contextWindow,
     modelInputModalities: Object.fromEntries(models.map(model => [model, manual ? ["text"] : ["text", "image"]])),
-    modelReasoningEfforts: Object.fromEntries(models.map(modelId => [modelId, modelId === CHATGPT_WEB_GPT6_BACKEND_MODEL ? ["max"] : efforts])),
+    modelReasoningEfforts: Object.fromEntries(models.map(modelId => [modelId, modelId === CHATGPT_WEB_ASTRA_BACKEND_MODEL ? ["max"] : efforts])),
     modelDefaultReasoningEfforts: Object.fromEntries(
-      models.map(modelId => [modelId, modelId === CHATGPT_WEB_GPT6_BACKEND_MODEL ? "max" : manual ? "low" : config.solAvailable ? "high" : "low"]),
+      models.map(modelId => [modelId, modelId === CHATGPT_WEB_ASTRA_BACKEND_MODEL ? "max" : manual ? "low" : config.solAvailable ? "high" : "low"]),
     ),
     noReasoningModels: [],
     chatgptWeb: {

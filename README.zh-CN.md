@@ -64,6 +64,22 @@ Codex 会保留原生任务、上下文生命周期、界面和工具 harness。
 设置及 OpenAI [临时聊天政策](https://help.openai.com/en/articles/8914046-temporary-chat-faq)
 约束。本项目为非官方项目；用户仍需自行遵守适用的 OpenAI 条款和工作区政策。
 
+## 本分支：GPT-6 Pro 与本地模型列表
+
+本分支保留 `chatgpt-web/pro` 这个已有模型 ID，但现在明确路由到 **GPT-6 Pro（Astra）**，
+不再只把 Sol 的 Pro 档位改一个显示名称。浏览器会先选择并确认 GPT-6 模型，再设置 Pro 推理档位；
+在发送提示前再次核验模型。账户尚未开放 GPT-6、选项被禁用或 UI 无法确认时会明确报错，
+不会静默改用 GPT-5.6 Sol Pro。官方的产品名称与开放说明见
+[GPT-5.6 and GPT-6 Pro in ChatGPT](https://help.openai.com/en/articles/20001354-gpt-56-in-chatgpt)。
+
+本地 Codex 原生列表中的 **Luna、Terra** 被隐藏，保留 Sol 和原生 Astra；隐藏不删除原生协议元数据，
+也不会擅自更改正在进行的任务或用户保存的默认模型。Free/Go 的 Web Luna 兼容路由仍保留。
+本分支对付费账户主要显示 Web High、Web Extra High（需 Pro）和 Web GPT-6 Pro（需 Pro，且网页已开放）。
+
+更新此分支源码并重启启动器，再重新打开 Codex / 刷新模型列表；选择 **ChatGPT Web — GPT-6 Pro**。
+仅 `git pull` 不会更新已经安装的上游发行版：源码安装使用 `bun run app`，打包安装需要用此分支重新构建。
+GPT-6 暂沿用现有 Pro 的保守浏览器预算，而非直接套用 API 的上下文窗口；实际网页上限仍需实测。
+
 ## 快速开始
 
 安装或更新桌面启动器。若要更新或修复现有安装，请先退出启动器，然后再次运行同一条命令；它会

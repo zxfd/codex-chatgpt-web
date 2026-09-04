@@ -1,47 +1,36 @@
-# Fork integration: upstream v5.0.2 and explicit GPT-6 selection
+# Upstream v5.0.2 + latest fork GPT-6 integration
 
-## Source boundary
+The integrated source is based on upstream `184b1d69b764982f9a34dce127d5f4d826afa9d8`
+(v5.0.2), and fork main `c2de3fa39bf30ce86e4d42caba57fce838df51a6` (PR #1).
+PR #1 landed while upstream integration was being prepared. Its stable route and model-family
+selection are retained; the earlier proposed duplicate GPT-6 selector was removed.
 
-Upstream: `miuuyy/codex-chatgpt-web`, pinned `184b1d69b764982f9a34dce127d5f4d826afa9d8` (v5.0.2).
-Fork starting point: `7d2344de5dffef16f77e5d2c841be4eafe19531a`.
-This is a history-preserving merge, not a reset or replacement of the fork.
+## Behavior
 
-Preserved fork behavior: exact visible connector-title matching, CRLF handling, duplicate rejection,
-bounded connector hydration waits, keyboard activation for the hidden macOS maintenance viewport,
-stable slider-based Pro capability detection, and the curated High/Extra High/Pro catalog.
-Upstream manual Zero Risk, runtime, environment recovery, and interrupt changes remain intact.
+- `chatgpt-web/pro` remains **ChatGPT Web — GPT-6 Pro**, routed to the internal Astra identity.
+  This is not an official API model parameter. No silent fallback to generic Sol Pro is allowed.
+- Named Astra/Sol family selection precedes effort selection. Menu and slider locators are
+  reacquired after the family switch. Named model radio rows cannot be used as effort positions.
+  Selected family is verified again after reasoning selection.
+- The existing Mac connector fixes remain: exact visible titles, CRLF handling, duplicate
+  rejection, bounded hydration waits, keyboard activation in the hidden maintenance viewport,
+  and slider-only Pro capability detection.
+- Native Luna/Terra aliases and Web Luna/Think are hidden from the local picker. Their old routes
+  and protocol metadata remain for compatibility. Repeated catalog refresh stays idempotent.
+- Upstream v5 manual Zero Risk, runtime recovery, cancellation and other changes are preserved.
+  Manual providers never expose automatic Astra; Astra multipart staging never switches to Sol.
+- GPT-6 uses the existing conservative Pro browser budgets, not the advertised API context size.
 
-## Model selection
+## Local verification boundary
 
-- `chatgpt-web/pro` retains the legacy generic Pro slider route. A Pro slot is not proof of GPT-6.
-- `chatgpt-web/gpt-6` is a separate **GPT-6 Astra** route, with a separate internal adapter identity.
-  It matches complete visible model titles (`GPT-6`, `GPT-6 Astra`, `GPT-6 Pro`, `GPT-6 Astra Pro`),
-  rejects disabled/ambiguous rows, clicks an enabled model row, and reopens the menu to verify its
-  semantic checked state before returning. It never silently substitutes Sol or generic Pro.
-- Native Luna/Terra rows and Web Luna/Think rows are hidden from the local picker. Explicit legacy
-  routing and their protocol metadata are retained; unrelated native Sol/GPT-6 rows are unchanged.
-- The GPT-6 route is conservatively offered only after the existing Pro capability probe succeeds.
-  This does not imply account rollout access: the named browser row is verified on every selection.
-- The fixed `ultra`/`max` values are bridge protocol values, not a claim that GPT-6 has a five-position
-  effort slider. Browser model-family selection is independent of the legacy slider.
-- GPT-6 reuses the existing conservative Pro browser budgets, not advertised model/API context limits.
-  Experimental multipart stages stay on GPT-6 rather than switching to a cheaper Sol model.
+CI covers typechecking, dependency audits, unit tests, renderer/runtime builds and runtime smoke.
+It does not log in to the user's Mac browser or prove the service-side model identity. The named
+browser row must be enabled for this account; accounts with only generic Pro fail rather than guess.
+The route is offered using the existing Pro capability probe, which is not proof of GPT-6 rollout.
 
-## Validation boundary and local rollout
-
-Unit tests cover routing/provider registration, selection state transitions, delayed hydration,
-reordered rows, no-op clicks, disabled/ambiguous/missing models, catalog idempotence, and existing
-Mac compatibility contracts. These tests do **not** verify a live authenticated account or a signed
-macOS application installation. Account-dependent browser validation is still required.
-
-For a source installation, fully quit the launcher, update this fork, and run `bun run app`.
-Use **Install Models / Repair Codex Setup**, fully restart Codex (not only its window), and keep the
-launcher running. Select **ChatGPT Web — GPT-6 Astra** in a fresh task. Confirm the launcher browser
-actually shows the named GPT-6/Astra model and that a harmless local read-only tool call returns.
-The trace checkpoint `gpt6-model-selected` records verified UI selection, not server-side model
-attestation. A self-reported model name in generated text is not verification.
-
-For a packaged installation, pulling source does not update the installed application. Build/install
-this fork's package or run this fork from source; the upstream installer would omit fork-only changes.
-If the account exposes only a generic Pro slot, the explicit GPT-6 route fails rather than guessing.
-The upstream Zero Risk mode permits manual selection, but likewise cannot attest the server's model.
+For a source installation, fully quit the launcher, update this fork and run `bun run app`.
+Use **Install Models / Repair Codex Setup**, fully quit/reopen Codex, keep the launcher running,
+and choose **ChatGPT Web — GPT-6 Pro** in a fresh task. Confirm the browser's named Astra/GPT-6
+selection and complete one harmless read-only local tool call. A model's self-reported name is
+not verification. Pulling source does not update an installed packaged Mac app; rebuild this fork
+or run from source rather than replacing it with an upstream binary that lacks the fork patches.

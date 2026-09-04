@@ -12,7 +12,7 @@ import {
 import { augmentNativeModelCatalog } from "../src/model-catalog";
 
 const PUBLISHED_PRO_WEB_ROUTES = CHATGPT_WEB_MODEL_ROUTES.filter(route =>
-  ["chatgpt-web/high", "chatgpt-web/extra-high", "chatgpt-web/pro", "chatgpt-web/gpt-6"].includes(route.slug)
+  ["chatgpt-web/high", "chatgpt-web/extra-high", "chatgpt-web/pro"].includes(route.slug)
 );
 
 function source(): Record<string, unknown> {
@@ -206,7 +206,7 @@ describe("native /models augmentation", () => {
     expect(slugs).toContain("gpt-reserve");
   });
 
-  test("retains hidden Luna and Think routes without publishing picker entries", () => {
+  test("retains hidden Luna and Think routes when the account exposes no Sol selector", () => {
     const config = defaultConfig("full");
     config.solAvailable = false;
     const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;

@@ -1,4 +1,3 @@
-import { selectChatGptGpt6Model } from "./gpt6-selector";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -25,7 +24,7 @@ import {
 import {
   CHATGPT_WEB_LUNA_MODEL_ID,
   CHATGPT_WEB_MODEL_ID,
-  CHATGPT_WEB_GPT6_MODEL_ID,
+  CHATGPT_WEB_ASTRA_MODEL_ID,
   resolveChatGptWebModelMode,
   type ChatGptWebCapabilities,
   type ChatGptWebModelMode,
@@ -60,6 +59,7 @@ import {
   parseChatGptEffortSliderState,
 } from "../../chatgpt-session";
 import { loginVerificationMarkerPath } from "../../browser-login";
+import { selectChatGptWebModelFamily, assertChatGptWebModelFamily } from "./model-family";
 import {
   connectLauncherBrowserHost,
   LauncherBrowserTurnCancelledError,
@@ -863,8 +863,7 @@ export function assertChatGptWebInputWithinLimits(
   capabilities: ChatGptWebCapabilities,
   promptChars?: number,
 ): void {
-  if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_LUNA_MODEL_ID
-    && modelId !== CHATGPT_WEB_GPT6_MODEL_ID) {
+  if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_LUNA_MODEL_ID && modelId !== CHATGPT_WEB_ASTRA_MODEL_ID) {
     throw new Error(`ChatGPT web context limit is not defined for model: ${modelId}`);
   }
   if (
@@ -927,7 +926,7 @@ export function assertChatGptWebMultipartInputWithinLimits(
       { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
     );
   }
-  if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_GPT6_MODEL_ID) {
+  if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_ASTRA_MODEL_ID) {
     throw new Error(`ChatGPT Bigger Context limit is not defined for model: ${modelId}`);
   }
   const { contextWindow: baseContextWindow } = resolveChatGptWebContextLimits(
@@ -997,11 +996,11 @@ export function resolveChatGptWebMultipartStagingMode(
       { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
     );
   }
-  if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_GPT6_MODEL_ID) {
+  if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_ASTRA_MODEL_ID) {
     throw new Error(`ChatGPT Bigger Context staging mode is not defined for model: ${modelId}`);
   }
-  // GPT-6 multipart staging stays on GPT-6; never silently stage on Sol/Instant.
-  const efforts: readonly ChatGptWebModelMode["effort"][] = modelId === CHATGPT_WEB_GPT6_MODEL_ID
+  // Astra is Pro-only on the Chat surface. Never stage its context using a different model.
+  const efforts: readonly ChatGptWebModelMode["effort"][] = modelId === CHATGPT_WEB_ASTRA_MODEL_ID
     ? ["max"]
     : capabilities.proAvailable ? ["low", "medium", "max"] : ["low", "medium"];
   for (const effort of efforts) {
@@ -2320,14 +2319,6 @@ export class ChatGptBrowserWorker {
     const mode = resolveChatGptWebModelMode(modelId, reasoning, capabilities);
     const composer = await this.activeComposer(page);
     const composerForm = composer.locator("xpath=ancestor::form[1]");
-    if (mode.modelId === CHATGPT_WEB_GPT6_MODEL_ID) {
-      await throwIfChatGptRateLimitDialog(page);
-      await throwIfChatGptSessionFailureAlert(page);
-      const control = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).last();
-      await control.waitFor({ state: "visible", timeout: 70_000 });
-      await selectChatGptGpt6Model(page, control, captureDiagnostic);
-      return mode;
-    }
     const uiEffortIndex = mode.uiEffortIndex;
     if (uiEffortIndex === null) {
       await settleChatGptUi();
@@ -2362,11 +2353,21 @@ export class ChatGptBrowserWorker {
     await throwIfChatGptRateLimitDialog(page);
     await captureDiagnostic?.("effort-control-ready");
     await throwIfChatGptRateLimitDialog(page);
-    const activation = await activateChatGptEffortMenu(page, currentEffort);
+    let activation = await activateChatGptEffortMenu(page, currentEffort);
     if (activation.method === "pointerdown") {
       await captureDiagnostic?.("effort-menu-pointerdown-fallback");
     }
     await captureDiagnostic?.("effort-menu-open-requested");
+    // Control readiness and an expired-session alert can resolve in the same event-loop turn.
+    // Recheck authoritative failures after activation, before inspecting or changing the model.
+    await throwIfChatGptSessionFailureAlert(page);
+    await throwIfChatGptRateLimitDialog(page);
+    const selectedFamily = await selectChatGptWebModelFamily(page, currentEffort, modelId, captureDiagnostic);
+    const confirmFamily = async (): Promise<void> => {
+      if (selectedFamily) await assertChatGptWebModelFamily(page, currentEffort, selectedFamily);
+    };
+    // Selecting Astra/Sol can close and rebuild the menu; reacquire its semantic controls.
+    activation = await activateChatGptEffortMenu(page, currentEffort);
     const effortMenu = activation.menu;
     const effortSlider = activation.slider;
     const effortChoices = effortMenu.locator(CHATGPT_EFFORT_ITEM_SELECTOR);
@@ -2375,7 +2376,10 @@ export class ChatGptBrowserWorker {
     let ready: "effort" | "slider" | "rate-limit" | "session-expired";
     try {
       ready = await Promise.race([
-        effortChoice.waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal }).then(() => "effort" as const),
+        // Named model radio rows are not the old effort-only radio menu.
+        ...(selectedFamily ? [] : [
+          effortChoice.waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal }).then(() => "effort" as const),
+        ]),
         effortSlider.waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal }).then(() => "slider" as const),
         chatGptRateLimitDialog(page).waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal }).then(() => "rate-limit" as const),
         chatGptExpiredSessionAlert(page).waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal }).then(() => "session-expired" as const),
@@ -2397,6 +2401,7 @@ export class ChatGptBrowserWorker {
     } finally {
       waitAbort.abort();
     }
+    if (ready !== "slider" && await effortSlider.isVisible().catch(() => false)) ready = "slider";
     if (ready === "slider") {
       let sliderState = parseChatGptEffortSliderState(
         await effortSlider.getAttribute("aria-valuemin"),
@@ -2408,7 +2413,8 @@ export class ChatGptBrowserWorker {
           "ChatGPT effort slider exposed an invalid ARIA range",
         );
       }
-      const targetValue = sliderState.min + uiEffortIndex;
+      const targetValue = selectedFamily === "astra" && sliderState.min === sliderState.max
+        ? sliderState.max : sliderState.min + uiEffortIndex;
       if (targetValue > sliderState.max) {
         const proUsageLimitHint = uiEffortIndex === 4 && sliderState.min === 0 && sliderState.max === 3
           ? " If you have made many Pro requests recently, ChatGPT may have temporarily hidden Pro because you reached its usage limit."
@@ -2448,6 +2454,7 @@ export class ChatGptBrowserWorker {
           );
         }
       }
+      await confirmFamily();
       await captureDiagnostic?.("effort-selected");
       await page.keyboard.press("Escape");
       return mode;
@@ -2459,6 +2466,7 @@ export class ChatGptBrowserWorker {
       );
     }
     if (selected === "true") {
+      await confirmFamily();
       await captureDiagnostic?.("effort-selected");
       await page.keyboard.press("Escape");
       return mode;
@@ -2483,6 +2491,7 @@ export class ChatGptBrowserWorker {
       }
       confirmed = await effortChoice.getAttribute("aria-checked");
       if (confirmed === "true") {
+        await confirmFamily();
         await captureDiagnostic?.("effort-selected");
         await page.keyboard.press("Escape");
         return mode;

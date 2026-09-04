@@ -36,8 +36,13 @@ function shouldExposeNativeModel(value: unknown): boolean {
 
 function shouldHideNativeSelectorModel(value: unknown): boolean {
   const modelSlug = slug(value);
-  return modelSlug !== undefined
-    && /^(?:gpt-\d+(?:\.\d+)?-)?(?:luna|terra)(?:$|[-.])/i.test(modelSlug);
+  if (modelSlug !== undefined
+    && /(?:^|\/)(?:gpt-\d+(?:\.\d+)?-)?(?:luna|terra)(?:$|[-.])/i.test(modelSlug)) return true;
+  // Also cover catalog aliases with an opaque slug and an explicit model-family display name.
+  const name = value && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonObject).display_name : undefined;
+  return typeof name === "string"
+    && /^(?:(?:gpt[-\s]*)?\d+(?:\.\d+)?[-\s]+)?(?:luna|terra)(?:$|[\s.-])/i.test(name.trim());
 }
 
 function reasoningLevel(template: JsonObject, effort: string, description: string): JsonObject {
@@ -84,7 +89,7 @@ function nativeTemplateCandidate(value: unknown, requireTools: boolean): value i
   // model in ChatGPT mode even when `supported_in_api` is false; that flag gates API-key mode, not
   // whether the backend row is a valid catalog template. The routed Web row overrides the flag to
   // true because this local Responses endpoint implements it.
-  // Picker-hidden Luna/Terra can still supply protocol metadata on a second augmentation.
+  // A row hidden solely by this fork still carries valid protocol metadata on refresh.
   if (model.visibility !== "list"
     && !(model.visibility === "hide" && shouldHideNativeSelectorModel(model))) return false;
   if (!Array.isArray(model.supported_reasoning_levels)) return false;
@@ -220,7 +225,6 @@ export function augmentNativeModelCatalog(
   const webModels = availableChatGptWebModelRoutes(config)
     .map(route => {
       const model = buildChatGptWebModel(template, route, config);
-      // Retain explicit legacy routing, but never offer Luna (including Think) in this fork's picker.
       if (route.backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) model.visibility = "hide";
       return model;
     });

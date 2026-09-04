@@ -1,7 +1,7 @@
 export const CHATGPT_WEB_MODEL_PREFIX = "chatgpt-web/";
 export const CHATGPT_WEB_BACKEND_MODEL = "gpt-5.6-sol";
-/** Adapter identity only; the browser must confirm a named GPT-6 model row before sending. */
-export const CHATGPT_WEB_GPT6_BACKEND_MODEL = "gpt-6-astra";
+// Internal browser route identity, not an undocumented ChatGPT HTTP API model parameter.
+export const CHATGPT_WEB_ASTRA_BACKEND_MODEL = "gpt-6-astra";
 export const CHATGPT_WEB_LUNA_BACKEND_MODEL = "gpt-5.6-luna";
 /** Internal adapter identity for a turn whose ChatGPT model is selected by the user in the launcher. */
 export const CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL = "chatgpt-web-zero-risk";
@@ -10,8 +10,8 @@ export const CHATGPT_WEB_ZERO_RISK_PRO_BACKEND_MODEL = "chatgpt-web-zero-risk-pr
 
 export type ChatGptWebAutomaticBackendModel =
   | typeof CHATGPT_WEB_BACKEND_MODEL
-  | typeof CHATGPT_WEB_LUNA_BACKEND_MODEL
-  | typeof CHATGPT_WEB_GPT6_BACKEND_MODEL;
+  | typeof CHATGPT_WEB_ASTRA_BACKEND_MODEL
+  | typeof CHATGPT_WEB_LUNA_BACKEND_MODEL;
 export type ChatGptWebBackendModel =
   | ChatGptWebAutomaticBackendModel
   | ChatGptWebZeroRiskBackendModel;
@@ -103,12 +103,26 @@ function contextLimits(
   };
 }
 
+function assertAstraMode(
+  backendModel: ChatGptWebBackendModel,
+  effort: ChatGptWebAdapterEffort,
+  capabilities: ChatGptWebAccountCapabilities,
+): void {
+  if (backendModel !== CHATGPT_WEB_ASTRA_BACKEND_MODEL) return;
+  if (!capabilities.solAvailable || !capabilities.proAvailable || effort !== "max") {
+    throw new Error("ChatGPT GPT-6 Pro requires a Pro-capable account and the max browser effort");
+  }
+}
+
 /** Resolve the product limit for the selected visible ChatGPT mode. */
 export function resolveChatGptWebContextLimits(
   backendModel: ChatGptWebBackendModel,
   effort: ChatGptWebAdapterEffort,
   capabilities: ChatGptWebAccountCapabilities,
 ): ChatGptWebContextLimits {
+  assertAstraMode(backendModel, effort, capabilities);
+  // Astra starts with the existing conservative Pro browser budget. Its API context window is
+  // not evidence of ChatGPT's composer/transport limits; do not advertise an unmeasured increase.
   if (isChatGptWebZeroRiskBackendModel(backendModel)) {
     if (capabilities.experimentalBiggerContext) {
       throw new Error("Zero Risk does not support Bigger Context");
@@ -131,8 +145,6 @@ export function resolveChatGptWebContextLimits(
     return contextLimits(CHATGPT_WEB_LUNA_CONTEXT_WINDOW, CHATGPT_WEB_LUNA_CONTEXT_WINDOW);
   }
 
-  // GPT-6 deliberately inherits this bridge's conservative Pro envelope until a logged-in
-  // browser measurement justifies a different limit. This is not its advertised native context.
   let limits: ChatGptWebContextLimits;
   if (capabilities.proAvailable) {
     const contextWindow = effort === "low"
@@ -167,6 +179,7 @@ export function resolveChatGptWebTransportLimits(
   effort: ChatGptWebAdapterEffort,
   capabilities: ChatGptWebAccountCapabilities,
 ): ChatGptWebTransportLimits {
+  assertAstraMode(backendModel, effort, capabilities);
   if (isChatGptWebZeroRiskBackendModel(backendModel)) return {};
   if (backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) return {};
   if (!capabilities.proAvailable) {
@@ -327,20 +340,10 @@ export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebAutomaticModelRoute[] 
   },
   {
     slug: "chatgpt-web/pro",
-    displayName: "ChatGPT Web — Pro",
-    description: "Account-gated ChatGPT Pro through the native Codex harness.",
+    displayName: "ChatGPT Web — GPT-6 Pro",
+    description: "GPT-6 Pro (GPT-6 Astra) through ChatGPT Web. Requires the visible GPT-6 model in the account picker; never falls back to Sol Pro.",
     interactionMode: "automatic",
-    backendModel: CHATGPT_WEB_BACKEND_MODEL,
-    codexEffort: "ultra",
-    adapterEffort: "max",
-    requiresPro: true,
-  },
-  {
-    slug: "chatgpt-web/gpt-6",
-    displayName: "ChatGPT Web — GPT-6 Astra",
-    description: "Explicit GPT-6/Astra browser selection; fails if the account does not expose a named, enabled GPT-6 model. Uses conservative existing Pro transport budgets.",
-    interactionMode: "automatic",
-    backendModel: CHATGPT_WEB_GPT6_BACKEND_MODEL,
+    backendModel: CHATGPT_WEB_ASTRA_BACKEND_MODEL,
     codexEffort: "ultra",
     adapterEffort: "max",
     requiresPro: true,
@@ -351,7 +354,6 @@ const CHATGPT_WEB_PREFERRED_SOL_MODEL_ROUTES = CHATGPT_WEB_MODEL_ROUTES.filter(r
   route.slug === "chatgpt-web/high"
   || route.slug === "chatgpt-web/extra-high"
   || route.slug === "chatgpt-web/pro"
-  || route.slug === "chatgpt-web/gpt-6"
 );
 
 const routesBySlug = new Map(

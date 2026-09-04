@@ -1,6 +1,7 @@
 import { estimateTokens } from "../../lib/token-estimate";
 import {
   CHATGPT_WEB_BACKEND_MODEL,
+  CHATGPT_WEB_ASTRA_BACKEND_MODEL,
   isChatGptWebZeroRiskBackendModel,
   resolveChatGptWebContextLimits,
 } from "../../chatgpt-web-models";
@@ -70,7 +71,7 @@ export function resolveBiggerContextMultipartParts(
   const mode = resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, capabilities);
 
   const onePartLimit = resolveChatGptWebContextLimits(
-    CHATGPT_WEB_BACKEND_MODEL,
+    parsed.modelId === CHATGPT_WEB_ASTRA_BACKEND_MODEL ? CHATGPT_WEB_ASTRA_BACKEND_MODEL : CHATGPT_WEB_BACKEND_MODEL,
     mode.effort,
     capabilities,
   ).autoCompactTokenLimit;
