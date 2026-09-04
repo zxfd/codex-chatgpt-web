@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { mock } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,10 +8,14 @@ import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker
 import { chatGptRetainedConversationUnavailableError } from "../src/adapters/chatgpt-web/adapter-error";
 import {
   MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
+  cancelAllStructuredCompactions,
+  cancelStructuredCompactionNativeTurn,
+  cancelStructuredCompactionTrace,
   existingStructuredCompactionRun,
   requestRetainedCompactionHandoff,
   runStructuredCompactionOnce,
   settleActiveCompactionSource,
+  settleActiveZeroRiskCompactionSource,
 } from "../src/adapters/chatgpt-web/compaction-handoff";
 import { CompactionTransactionStore } from "../src/adapters/chatgpt-web/compaction-transaction";
 import {
@@ -422,22 +427,181 @@ test("retained compaction deadline bounds browser settlement after the control h
 
 test("a rejected exact compaction run is evicted while a successful run remains replayable", async () => {
   const key = `exact-retry-${Date.now()}-${Math.random()}`;
+  const owner = { ownerKey: `owner-${key}`, traceIds: [`trace-${key}`] };
   let starts = 0;
-  await expect(runStructuredCompactionOnce(key, async () => {
+  await expect(runStructuredCompactionOnce(key, owner, async () => {
     starts += 1;
     throw new Error("first handoff failed");
   })).rejects.toThrow("first handoff failed");
   await Bun.sleep(0);
   expect(existingStructuredCompactionRun(key)).toBeUndefined();
 
-  const retry = runStructuredCompactionOnce(key, async () => {
+  const retry = runStructuredCompactionOnce(key, owner, async () => {
     starts += 1;
     return "recovered checkpoint";
   });
-  expect(runStructuredCompactionOnce(key, async () => "must not start")).toBe(retry);
+  expect(runStructuredCompactionOnce(key, owner, async () => "must not start")).toBe(retry);
   await expect(retry).resolves.toBe("recovered checkpoint");
   await expect(existingStructuredCompactionRun(key)).resolves.toBe("recovered checkpoint");
   expect(starts).toBe(2);
+});
+
+test("operator cancellation aborts the shared structured compaction owner", async () => {
+  const key = `operator-cancel-${Date.now()}-${Math.random()}`;
+  const traceId = `trace-${key}`;
+  let aborted = false;
+  const run = runStructuredCompactionOnce(
+    key,
+    { ownerKey: `owner-${key}`, traceIds: [traceId] },
+    signal => new Promise<string>((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        aborted = true;
+        reject(signal.reason);
+      }, { once: true });
+    }),
+  );
+  await Bun.sleep(0);
+  expect(await cancelStructuredCompactionTrace(traceId, new Error("operator cancelled"))).toBe(1);
+  await expect(run).rejects.toThrow("operator cancelled");
+  expect(aborted).toBeTrue();
+  expect(existingStructuredCompactionRun(key)).toBeUndefined();
+});
+
+test("native interruption before registration prevents the detached compaction from starting", async () => {
+  const key = `interrupt-before-registration-${Date.now()}-${Math.random()}`;
+  const owner = {
+    ownerKey: `owner-${key}`,
+    traceIds: [`trace-${key}`],
+    nativeThreadId: `thread-${key}`,
+    nativeTurnId: `turn-${key}`,
+  };
+  const reason = new DOMException("Codex turn interrupted", "AbortError");
+
+  const cancellation = cancelStructuredCompactionNativeTurn(
+    owner.nativeThreadId,
+    owner.nativeTurnId,
+    reason,
+  );
+  expect(cancellation.cancelled).toBe(0);
+  await cancellation.settlement;
+  const duplicateCancellation = cancelStructuredCompactionNativeTurn(
+    owner.nativeThreadId,
+    owner.nativeTurnId,
+    new Error("duplicate interrupt must not replace the first reason"),
+  );
+  expect(duplicateCancellation.cancelled).toBe(0);
+  await duplicateCancellation.settlement;
+  const unrelatedSettlements: Promise<void>[] = [];
+  for (let index = 0; index < 1_025; index += 1) {
+    const unrelated = cancelStructuredCompactionNativeTurn(
+      `thread-unrelated-${key}-${index}`,
+      `turn-unrelated-${key}-${index}`,
+      new Error(`unrelated interrupt ${index}`),
+    );
+    unrelatedSettlements.push(unrelated.settlement);
+  }
+  await Promise.all(unrelatedSettlements);
+
+  let started = false;
+  const run = runStructuredCompactionOnce(key, owner, async () => {
+    started = true;
+    return "must not start";
+  });
+
+  await expect(run).rejects.toBe(reason);
+  expect(started).toBeFalse();
+  expect(existingStructuredCompactionRun(key)).toBeUndefined();
+
+  let unrelatedStarted = false;
+  await expect(runStructuredCompactionOnce(
+    `${key}-unrelated`,
+    {
+      ...owner,
+      ownerKey: `${owner.ownerKey}-unrelated`,
+      nativeTurnId: `${owner.nativeTurnId}-unrelated`,
+    },
+    async () => {
+      unrelatedStarted = true;
+      return "unrelated checkpoint";
+    },
+  )).resolves.toBe("unrelated checkpoint");
+  expect(unrelatedStarted).toBeTrue();
+});
+
+test("a completed exact compaction remains replayable after a later native interruption", async () => {
+  const key = `completed-before-interrupt-${Date.now()}-${Math.random()}`;
+  const owner = {
+    ownerKey: `owner-${key}`,
+    traceIds: [`trace-${key}`],
+    nativeThreadId: `thread-${key}`,
+    nativeTurnId: `turn-${key}`,
+  };
+  const completed = runStructuredCompactionOnce(key, owner, async () => "canonical checkpoint");
+  await expect(completed).resolves.toBe("canonical checkpoint");
+
+  const cancellation = cancelStructuredCompactionNativeTurn(
+    owner.nativeThreadId,
+    owner.nativeTurnId,
+    new DOMException("Codex turn interrupted", "AbortError"),
+  );
+  expect(cancellation.cancelled).toBe(0);
+  await cancellation.settlement;
+
+  let restarted = false;
+  const replay = runStructuredCompactionOnce(key, owner, async () => {
+    restarted = true;
+    return "must not replace canonical checkpoint";
+  });
+  expect(replay).toBe(completed);
+  await expect(replay).resolves.toBe("canonical checkpoint");
+  expect(restarted).toBeFalse();
+});
+
+test("a duplicate native interruption refreshes its lifetime without replacing its reason", async () => {
+  const originalNow = Date.now;
+  const key = `duplicate-interrupt-refresh-${originalNow()}-${Math.random()}`;
+  const initialNow = 1_000_000_000;
+  let now = initialNow;
+  Date.now = () => now;
+  try {
+    const owner = {
+      ownerKey: `owner-${key}`,
+      traceIds: [`trace-${key}`],
+      nativeThreadId: `thread-${key}`,
+      nativeTurnId: `turn-${key}`,
+    };
+    const originalReason = new DOMException("first Codex turn interruption", "AbortError");
+    cancelStructuredCompactionNativeTurn(owner.nativeThreadId, owner.nativeTurnId, originalReason);
+
+    now = initialNow + (29 * 60_000) + 59_000;
+    cancelStructuredCompactionNativeTurn(
+      owner.nativeThreadId,
+      owner.nativeTurnId,
+      new Error("duplicate reason must not become authoritative"),
+    );
+
+    now = initialNow + (30 * 60_000) + 1_000;
+    let started = false;
+    const run = runStructuredCompactionOnce(key, owner, async () => {
+      started = true;
+      return "must not start";
+    });
+    await expect(run).rejects.toBe(originalReason);
+    expect(started).toBeFalse();
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("structured compaction rejects incomplete native interruption identities", () => {
+  const reason = new DOMException("Codex turn interrupted", "AbortError");
+  expect(() => cancelStructuredCompactionNativeTurn(" ", "turn_valid", reason))
+    .toThrow("non-empty native thread and turn ids");
+  expect(() => runStructuredCompactionOnce(
+    `incomplete-native-owner-${Date.now()}-${Math.random()}`,
+    { ownerKey: "incomplete-native-owner", traceIds: [], nativeThreadId: "thread_valid" },
+    async () => "must not start",
+  )).toThrow("non-empty native thread and turn ids");
 });
 
 test("active compaction settles canonical tool results before the separate retained handoff", async () => {
@@ -584,6 +748,44 @@ test("active compaction aborts its source when the shared handoff deadline expir
     controller.signal,
   )).rejects.toThrow("shared compaction deadline expired");
   expect(cancellations).toBe(1);
+});
+
+test("Zero Risk active compaction returns through its explicit completion control", async () => {
+  const completed: BrokerToolResult[] = [];
+  const broker = {
+    requestCompaction: () => 0,
+    compactionDeliveryCount: () => 0,
+    completeTool: async (_token: string, _callId: string, result: BrokerToolResult) => {
+      completed.push(result);
+    },
+    revoke() {},
+  } as unknown as TurnBroker;
+  const source = new ChatGptTurnSession({
+    mode: "tools",
+    token: Promise.resolve("turn_active_zero_risk"),
+    externalProgress: { recordToolResult() {} } as never,
+    manualControl: { surfaceNonce: "n".repeat(24) },
+    browser: Promise.resolve("Zero Risk checkpoint"),
+    physicalSettlement: Promise.resolve(),
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    cancel() {},
+  });
+  source.setOutstanding([{ callId: "call_one", wireName: "exec_command", freeform: false }]);
+  const parsed = request(true);
+  parsed.context.messages.push({
+    role: "toolResult",
+    toolCallId: "call_one",
+    toolName: "exec_command",
+    content: "one",
+    isError: false,
+    timestamp: 4,
+  });
+
+  await expect(settleActiveZeroRiskCompactionSource(parsed, source, broker))
+    .resolves.toBe("Zero Risk checkpoint");
+  expect(JSON.stringify(completed)).toContain("Return only the complete checkpoint summary to Codex with codex_turn_complete");
+  expect(JSON.stringify(completed)).not.toContain("CODEX_ACTIVE_COMPACTION_CHECKPOINT_");
 });
 
 test("active compaction interrupts a queued MCP call that Codex never started waiting for", async () => {
@@ -742,6 +944,35 @@ test("retained conversation release waits for physical settlement", async () => 
   settlePhysical();
   expect(await retirement).toBe(1);
   expect(releases).toBe(1);
+});
+
+test("a repeated compaction waits for the previous conversation retirement", async () => {
+  const sessions = new ChatGptTurnSessions();
+  const conversationKey = "c".repeat(64);
+  let settlePhysical!: () => void;
+  const physicalSettlement = new Promise<void>(resolve => { settlePhysical = resolve; });
+  sessions.getOrCreate("retained-repeating", () => ({
+    mode: "read-only",
+    browser: Promise.resolve("done"),
+    physicalSettlement,
+    trace: new ChatGptTraceFeed(),
+    text: new ChatGptTextFeed(),
+    conversationKey,
+    releaseRetainedConversation: async () => {},
+    cancel() {},
+  }));
+
+  const retirement = sessions.retireConversationAndWait(conversationKey);
+  let waited = false;
+  const nextCompaction = sessions.waitForConversationRetirement(conversationKey).then(() => {
+    waited = true;
+  });
+  await Bun.sleep(0);
+  expect(waited).toBeFalse();
+  settlePhysical();
+  await retirement;
+  await nextCompaction;
+  expect(waited).toBeTrue();
 });
 
 test("retained compaction can close its browser epoch while preserving an ordinary final response", async () => {
@@ -1023,6 +1254,108 @@ test("structured compact rebuilds canonical context when its retained source is 
   }
 });
 
+test("fresh multipart compaction gives each acknowledged phase its own handoff budget", async () => {
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-phased-fallback-compact-"));
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://phased-fallback-${Date.now()}`,
+    chatgptWeb: {
+      browserHost: "launcher",
+      browserHostDescriptorPath: join(root, "launcher.json"),
+      brokerSocketPath: defaultBrokerEndpoint(root),
+      localToolsEnabled: true,
+      solAvailable: true,
+      proAvailable: true,
+      turnTimeoutMs: 40,
+    },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    expect(turn.onMultipartStageAcknowledged).toBeDefined();
+    expect(turn.onSubmitted).toBeDefined();
+    mock.timers.tick(25);
+    expect(turn.abortSignal?.aborted).toBeFalse();
+    await turn.onMultipartStageAcknowledged!(1);
+    mock.timers.tick(25);
+    expect(turn.abortSignal?.aborted).toBeFalse();
+    turn.onSubmitted!();
+    mock.timers.tick(25);
+    expect(turn.abortSignal?.aborted).toBeFalse();
+    return "Fallback checkpoint after separately bounded phases";
+  };
+  const events: AdapterEvent[] = [];
+  mock.timers.enable({ apis: ["setTimeout"] });
+  try {
+    await createChatGptWebAdapter(provider).runTurn!(
+      request(true),
+      { headers: new Headers() },
+      event => events.push(event),
+    );
+    expect(events.some(event => event.type === "text_delta"
+      && event.text.includes("Fallback checkpoint after separately bounded phases"))).toBeTrue();
+    expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
+  } finally {
+    mock.timers.reset();
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("cancel-all waits for physical settlement of a fresh compaction fallback", async () => {
+  const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-cancel-fresh-compaction-"));
+  const provider: CodexProviderConfig = {
+    adapter: "chatgpt-web",
+    baseUrl: `browser://cancel-fresh-${Date.now()}`,
+    chatgptWeb: {
+      browserHost: "launcher",
+      browserHostDescriptorPath: join(root, "launcher.json"),
+      brokerSocketPath: defaultBrokerEndpoint(root),
+      localToolsEnabled: true,
+      solAvailable: true,
+      proAvailable: true,
+    },
+  };
+  const worker = ChatGptBrowserWorker.forProvider(provider);
+  const originalRun = worker.run.bind(worker);
+  let fallbackStarted!: () => void;
+  const fallbackReady = new Promise<void>(resolve => { fallbackStarted = resolve; });
+  let releasePhysical!: () => void;
+  const physicalSettlement = new Promise<void>(resolve => { releasePhysical = resolve; });
+  let cancelObserved = false;
+  (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
+    expect(turn.requireRetainedConversation).toBeUndefined();
+    fallbackStarted();
+    turn.abortSignal?.addEventListener("abort", () => { cancelObserved = true; }, { once: true });
+    await physicalSettlement;
+    return "cancelled fallback";
+  };
+
+  const adapterRun = createChatGptWebAdapter(provider).runTurn!(
+    request(true),
+    { headers: new Headers() },
+    () => {},
+  );
+  try {
+    await fallbackReady;
+    const cancellation = cancelAllStructuredCompactions(new Error("operator cancelled"));
+    let cancellationSettled = false;
+    void cancellation.then(() => { cancellationSettled = true; });
+    await Bun.sleep(10);
+    expect(cancelObserved).toBeTrue();
+    expect(cancellationSettled).toBeFalse();
+    releasePhysical();
+    await expect(cancellation).resolves.toBe(1);
+    await adapterRun;
+  } finally {
+    releasePhysical();
+    (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
+    await TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!).close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("structured compact rebuilds canonical context when its retained browser disappeared", async () => {
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-stale-retained-compact-"));
   const provider: CodexProviderConfig = {
@@ -1134,7 +1467,7 @@ test("a disappeared retained source cannot leave its fresh compaction rebuild pa
       type: "error",
       code: "compaction_handoff_failed",
       retryable: false,
-      message: expect.stringContaining("did not fully settle within 25ms"),
+      message: "ChatGPT did not complete the context handoff. Retry the task.",
     });
   } finally {
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;

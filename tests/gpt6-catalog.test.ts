@@ -67,3 +67,15 @@ test("local picker filters Luna/Terra aliases and dated variants without mutatin
   expect(input).toEqual(original);
   expect(models.find(model => model.slug === "luna")?.supported_reasoning_levels).toEqual(original.models[3]?.supported_reasoning_levels);
 });
+
+
+test("hidden Luna-only metadata stays usable after refreshing the local picker", () => {
+  const config = defaultConfig("full");
+  config.solAvailable = false;
+  const input = { models: [listModel("gpt-5.6-luna", "5.6 Luna")] };
+  const result = augmentNativeModelCatalog(input, config);
+  const models = result.models as Array<Record<string, unknown>>;
+  expect(models.map(model => model.visibility)).toEqual(["hide", "hide", "hide"]);
+  expect(augmentNativeModelCatalog(result, config)).toEqual(result);
+  expect(input.models[0]?.visibility).toBe("list");
+});

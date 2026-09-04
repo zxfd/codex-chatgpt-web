@@ -7,7 +7,11 @@ import { isAbsolute } from "node:path";
 import { stdin, stdout } from "node:process";
 import { captureSystemBrowserLoginToFile, checkBrowserEngine, loginToChatGpt } from "./browser-login";
 import { CHATGPT_CONNECTOR_NAME, defaultConfig, getConfigDir, getConfigPath, loadConfig, loadConfigForSetup } from "./config";
-import { inspectLauncherBrowserHost, readLauncherBrowserHostDescriptor } from "./launcher-browser-host";
+import {
+  inspectLauncherBrowserHost,
+  inspectLauncherBrowserHostLiveness,
+  readLauncherBrowserHostDescriptor,
+} from "./launcher-browser-host";
 import {
   activateCodexIntegration,
   deactivateCodexIntegration,
@@ -20,8 +24,8 @@ import { formatDoctorReport, runDoctor } from "./doctor";
 import { runChatGptMcpMain } from "./adapters/chatgpt-web/mcp-main";
 import { runCommand } from "./process";
 import { startServer } from "./server";
-import { assertServiceIdle, cancelActiveTurns, getServiceStatus, installService, restartService, startService, stopService, uninstallService } from "./service";
-import { existingFullSetupCredentials, setup, type SetupOptions } from "./setup";
+import { assertServiceIdle, cancelActiveTurns, getServiceStatus, installService, interruptActiveTurn, restartService, startService, stopService, uninstallService } from "./service";
+import { existingFullSetupCredentials, preflightSetup, setup, type SetupOptions } from "./setup";
 import { installRuntimeKeyBytes, managedRuntimeKeyPath, stopTunnel, tunnelStatus, waitForTunnelReady } from "./tunnel";
 import { getTunnelServiceStatus, restartTunnelService, startTunnelService, stopTunnelService, uninstallTunnelService } from "./tunnel-service";
 import { VERSION } from "./version";
@@ -54,16 +58,22 @@ Usage:
 Setup options:
   --browser-only               Account-eligible Web models, full context/images, no local tools or tunnel
   --full                       Account-eligible Web models with tools through the configured connector
+  --automatic-browser-interaction
+                               Send prompts and read ChatGPT state through browser automation (default)
+  --zero-risk-browser-interaction
+                               Full mode: select, paste, and send in the launcher yourself
+  --zero-risk-pro              Zero Risk: also install the explicit Pro-sized model row
+  --zero-risk-default          Zero Risk: install only the default model row
   --port NUMBER                Loopback Responses port (default: 17841)
   --chrome PATH                Google Chrome/Chromium executable used for account login
   --browser-host-descriptor PATH
                                Use the embedded launcher browser described by this owner-only file
   --refresh-account-capabilities
                                Re-read the authenticated account's available Web models
-  --app-name NAME              ChatGPT connector name (default: ${CHATGPT_CONNECTOR_NAME})
+  --app-name NAME              Automatic-mode ChatGPT connector name (default: ${CHATGPT_CONNECTOR_NAME})
   --tunnel-id ID               Existing OpenAI tunnel id (full mode)
   --runtime-key-file PATH      File containing a Tunnels Read+Use runtime key
-  --replace-codex-route        Reversibly replace an existing openai_base_url
+  --replace-codex-route        Reversibly replace existing Responses or Voice route settings
   --subagent-protocol MODE     compatibility-v1 (default) or native (advanced)
   --restart-service            Explicitly restart this project's daemon after an update
   --login                      Refresh the stored ChatGPT login even if one exists
@@ -250,6 +260,7 @@ async function loginCommand(args: string[]): Promise<void> {
 }
 
 async function setupCommand(args: string[]): Promise<void> {
+  const preflightOnly = takeFlag(args, "--preflight-only");
   const browserOnly = takeFlag(args, "--browser-only");
   const full = takeFlag(args, "--full");
   if (browserOnly === full) throw new Error("Choose exactly one setup mode: --browser-only or --full");
@@ -259,6 +270,16 @@ async function setupCommand(args: string[]): Promise<void> {
     mode: full ? "full" : "browser-only",
     ...(portRaw ? { port: Number(portRaw) } : {}),
   };
+  const automaticBrowserInteraction = takeFlag(args, "--automatic-browser-interaction");
+  const manualBrowserInteraction = takeFlag(args, "--zero-risk-browser-interaction");
+  if (automaticBrowserInteraction && manualBrowserInteraction) {
+    throw new Error(
+      "Choose at most one browser interaction mode: --automatic-browser-interaction or --zero-risk-browser-interaction",
+    );
+  }
+  if (automaticBrowserInteraction || manualBrowserInteraction) {
+    options.browserInteractionMode = manualBrowserInteraction ? "manual" : "automatic";
+  }
   const subagentProtocol = takeOption(args, "--subagent-protocol");
   if (subagentProtocol !== undefined) {
     if (subagentProtocol !== "compatibility-v1" && subagentProtocol !== "native") {
@@ -285,6 +306,12 @@ async function setupCommand(args: string[]): Promise<void> {
     throw new Error("Choose at most one context mode: --bigger-context or --standard-context");
   }
   if (biggerContext || standardContext) options.experimentalBiggerContext = biggerContext;
+  const zeroRiskPro = takeFlag(args, "--zero-risk-pro");
+  const zeroRiskDefault = takeFlag(args, "--zero-risk-default");
+  if (zeroRiskPro && zeroRiskDefault) {
+    throw new Error("Choose at most one Zero Risk model profile: --zero-risk-pro or --zero-risk-default");
+  }
+  if (zeroRiskPro || zeroRiskDefault) options.zeroRiskProEnabled = zeroRiskPro;
   options.replaceCodexRoute = takeFlag(args, "--replace-codex-route");
   options.restartService = takeFlag(args, "--restart-service");
   assertNoArgs(args);
@@ -299,12 +326,19 @@ async function setupCommand(args: string[]): Promise<void> {
   if (!acknowledged) throw new Error("Setup cancelled: acknowledgement was not provided");
   options.acknowledgedUnofficial = true;
 
+  if (preflightOnly) {
+    preflightSetup(options);
+    stdout.write("Setup preflight complete.\n");
+    return;
+  }
+
   const existing = existsSync(getConfigPath()) ? loadConfigForSetup() : undefined;
-  const reusableCredentials = existingFullSetupCredentials(existing);
+  const interactionMode = options.browserInteractionMode ?? existing?.browserInteractionMode ?? "automatic";
+  const reusableCredentials = existingFullSetupCredentials(existing, interactionMode);
   const needsTunnelId = !options.tunnelId && !reusableCredentials.tunnelId;
   const needsRuntimeKey = !options.runtimeKeyFile
     && !reusableCredentials.runtimeKey
-    && !existsSync(managedRuntimeKeyPath());
+    && !existsSync(managedRuntimeKeyPath(interactionMode));
 
   if (full && (needsTunnelId || needsRuntimeKey) && stdin.isTTY) {
     stdout.write("Full mode needs an OpenAI tunnel and a runtime key with Tunnels Read + Use.\n");
@@ -399,6 +433,32 @@ async function serviceCommand(args: string[]): Promise<void> {
             : undefined;
   if (!status) throw new Error(`Unknown service action: ${action}`);
   stdout.write(`${JSON.stringify(status, null, 2)}\n`);
+}
+
+async function interruptHookCommand(args: string[]): Promise<void> {
+  assertNoArgs(args);
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of stdin) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buffer.byteLength;
+    if (bytes > 32 * 1024) throw new Error("Codex Interrupt hook payload is too large");
+    chunks.push(buffer);
+  }
+  let payload: { hook_event_name?: unknown; session_id?: unknown; turn_id?: unknown };
+  try {
+    payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new Error("Codex Interrupt hook payload is not valid JSON");
+  }
+  const threadId = typeof payload.session_id === "string" ? payload.session_id.trim() : "";
+  const turnId = typeof payload.turn_id === "string" ? payload.turn_id.trim() : "";
+  if (payload.hook_event_name !== "Interrupt"
+    || !/^[A-Za-z0-9_-]{6,128}$/.test(threadId)
+    || !/^[A-Za-z0-9_-]{6,128}$/.test(turnId)) {
+    throw new Error("Codex Interrupt hook payload has no valid session_id or turn_id");
+  }
+  await interruptActiveTurn(loadConfig(), { threadId, turnId });
 }
 
 async function tunnelCommand(args: string[]): Promise<void> {
@@ -507,8 +567,13 @@ async function main(): Promise<void> {
     if (action !== "check") throw new Error("Browser command must be: browser check");
     const config = loadConfig();
     if (config.browserHost === "launcher") {
-      await inspectLauncherBrowserHost(config.browserHostDescriptorPath!);
-      stdout.write("Playwright can reach the authenticated ChatGPT surface embedded in the launcher.\n");
+      if (config.browserInteractionMode === "manual") {
+        await inspectLauncherBrowserHostLiveness(config.browserHostDescriptorPath!);
+        stdout.write("The launcher browser is reachable; ChatGPT DOM inspection is intentionally disabled in Zero Risk.\n");
+      } else {
+        await inspectLauncherBrowserHost(config.browserHostDescriptorPath!);
+        stdout.write("Playwright can reach the authenticated ChatGPT surface embedded in the launcher.\n");
+      }
     } else {
       await checkBrowserEngine(config);
       stdout.write("Playwright can launch the configured Chrome executable.\n");
@@ -522,6 +587,11 @@ async function main(): Promise<void> {
   } else if (command === "dev") await runDevCommand(args);
   else if (command === "mcp") await runChatGptMcpMain(args);
   else if (command === "service") await serviceCommand(args);
+  else if (command === "hook") {
+    const action = args.shift();
+    if (action !== "interrupt") throw new Error("Hook command must be: hook interrupt");
+    await interruptHookCommand(args);
+  }
   else if (command === "tunnel") await tunnelCommand(args);
   else if (command === "open") await openCommand(args);
   else if (command === "uninstall") await uninstallCommand(args);

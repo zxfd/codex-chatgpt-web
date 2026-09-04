@@ -96,7 +96,7 @@ test("Astra budgets are conservative Pro browser budgets, not the API's model wi
   expect(() => resolveChatGptWebContextLimits(CHATGPT_WEB_ASTRA_BACKEND_MODEL, "high", pro)).toThrow("max browser effort");
   expect(() => assertChatGptWebInputWithinLimits(9_000, 808, CHATGPT_WEB_ASTRA_BACKEND_MODEL, "max", pro, 2_000)).not.toThrow();
   expect(() => assertChatGptWebInputWithinLimits(120_000, 110_000, CHATGPT_WEB_ASTRA_BACKEND_MODEL, "max", pro)).toThrow("message boundary");
-  const stage = resolveChatGptWebMultipartStagingMode(CHATGPT_WEB_ASTRA_BACKEND_MODEL, pro, "max", 1_000, 4_000);
+  const stage = resolveChatGptWebMultipartStagingMode(CHATGPT_WEB_ASTRA_BACKEND_MODEL, pro, 1_000, 4_000);
   expect(stage).toMatchObject({ modelId: CHATGPT_WEB_ASTRA_BACKEND_MODEL, effort: "max" });
 });
 
