@@ -230,8 +230,8 @@ export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebModelRoute[] = [
   },
   {
     slug: "chatgpt-web/pro",
-    displayName: "ChatGPT Web — Pro",
-    description: "Account-gated ChatGPT Pro through the native Codex harness.",
+    displayName: "ChatGPT Web — GPT-6 Pro",
+    description: "ChatGPT Pro slot through the native Codex harness; uses GPT-6 Pro (GPT-6 Astra) when the account rollout exposes it.",
     backendModel: CHATGPT_WEB_BACKEND_MODEL,
     codexEffort: "ultra",
     adapterEffort: "max",

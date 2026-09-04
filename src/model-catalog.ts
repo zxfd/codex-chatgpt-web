@@ -33,6 +33,12 @@ function shouldExposeNativeModel(value: unknown): boolean {
   return major > 5 || (major === 5 && minor >= 6);
 }
 
+function shouldHideNativeSelectorModel(value: unknown): boolean {
+  const modelSlug = slug(value);
+  return modelSlug !== undefined
+    && /^gpt-\d+(?:\.\d+)?-(?:luna|terra)(?:$|[-.])/i.test(modelSlug);
+}
+
 function reasoningLevel(template: JsonObject, effort: string, description: string): JsonObject {
   const levels = Array.isArray(template.supported_reasoning_levels)
     ? template.supported_reasoning_levels.filter(level => level && typeof level === "object" && !Array.isArray(level)) as JsonObject[]
@@ -180,6 +186,8 @@ export function augmentNativeModelCatalog(
       }
     }
   }
+  // Select the Web template before hiding rows from the local picker. Luna/Terra can still provide
+  // protocol metadata on unusually small official catalogs, but they must never remain user-selectable.
   const template = selectNativeTemplate(nativeModels, config);
   if (contextOverride) {
     // model_context_window is a single top-level Codex setting, not a per-model one. Apply its
@@ -197,6 +205,13 @@ export function augmentNativeModelCatalog(
       if (current === undefined || current === null || current < contextOverride.contextWindow) {
         model.max_context_window = contextOverride.contextWindow;
       }
+    }
+  }
+  for (const candidate of nativeModels) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const model = candidate as JsonObject;
+    if (model.visibility === "list" && shouldHideNativeSelectorModel(model)) {
+      model.visibility = "hide";
     }
   }
   const webModels = availableChatGptWebModelRoutes(config)
