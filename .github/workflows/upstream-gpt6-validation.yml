@@ -3,34 +3,84 @@ name: Upstream GPT-6 integration validation
 on:
   push:
     branches: [feat/upstream-v5-gpt6-macos]
-    paths:
-      - .github/workflows/upstream-gpt6-validation.yml
-      - .upstream-gpt6.patch
 
 permissions:
   contents: read
 
 jobs:
-  inspect:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Fetch pinned upstream without changing the working tree
+      - name: Prepare the exact integration tree without publishing it
         run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git fetch https://github.com/miuuyy/codex-chatgpt-web.git 184b1d69b764982f9a34dce127d5f4d826afa9d8
-          git update-ref refs/heads/upstream-inspection FETCH_HEAD
-          git bundle create "$RUNNER_TEMP/upstream-workspace.bundle" --all
-          git log --oneline --left-right HEAD...upstream-inspection > "$RUNNER_TEMP/divergence.txt"
-          git diff --stat HEAD...upstream-inspection > "$RUNNER_TEMP/upstream-stat.txt"
-      - uses: actions/upload-artifact@v4
+          git merge --no-commit --no-ff 184b1d69b764982f9a34dce127d5f4d826afa9d8 || test -f .git/MERGE_HEAD
+          python3 .integration/merge-gpt6.py
+          rm .integration/merge-gpt6.py .github/workflows/upstream-gpt6-validation.yml
+          git add -A
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git diff --cached --check
+          git write-tree > "$RUNNER_TEMP/tree-sha.txt"
+      - uses: oven-sh/setup-bun@v2
         with:
-          name: upstream-gpt6-workspace
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: launcher
+      - name: Typecheck, full regression suite, launcher build and runtime smoke
+        run: |
+          set -o pipefail
+          bun run verify 2>&1 | tee "$RUNNER_TEMP/verification.log"
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-${{ matrix.os }}
           retention-days: 3
           path: |
-            ${{ runner.temp }}/upstream-workspace.bundle
-            ${{ runner.temp }}/divergence.txt
-            ${{ runner.temp }}/upstream-stat.txt
+            ${{ runner.temp }}/tree-sha.txt
+            ${{ runner.temp }}/verification.log
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: validation-ubuntu-latest
+          path: /tmp/validated-tree
+      - name: Publish only the tested merge to the isolated feature branch
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch https://github.com/miuuyy/codex-chatgpt-web.git 184b1d69b764982f9a34dce127d5f4d826afa9d8
+          git merge --no-commit --no-ff 184b1d69b764982f9a34dce127d5f4d826afa9d8 || test -f .git/MERGE_HEAD
+          python3 .integration/merge-gpt6.py
+          rm .integration/merge-gpt6.py .github/workflows/upstream-gpt6-validation.yml
+          git add -A
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git diff --cached --check
+          test "$(git write-tree)" = "$(cat /tmp/validated-tree/tree-sha.txt)"
+          git commit -m 'feat: merge upstream v5.0.2 with Mac fixes and explicit GPT-6 selection'
+          git push origin HEAD:feat/upstream-v5-gpt6-macos
