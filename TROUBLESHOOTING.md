@@ -91,6 +91,11 @@ missing paid selector on those accounts is not itself a sign-in failure.
 
 ## Full harness or MCP verification fails
 
+Video walkthroughs:
+
+- [Create an OpenAI tunnel and API key](launcher/src/assets/mcp-create-tunnel.mp4)
+- [Connect the local harness and attach the ChatGPT connector](launcher/src/assets/mcp-connect-connector.mp4)
+
 Browser-only mode needs no connector. Full harness mode requires all of the following:
 
 - a newly created connector named exactly **Codex Native2**;
@@ -102,6 +107,16 @@ Browser-only mode needs no connector. Full harness mode requires all of the foll
 
 Do not rename or refresh an old **Codex Native** connector. ChatGPT caches the public MCP contract by
 connector identity, so create **Codex Native2** as a new connector.
+
+### ChatGPT shows `Error creating connector`
+
+1. Confirm that the Tunnel ID and the regular API key used by the launcher were created under the
+   same OpenAI account.
+2. Confirm that the launcher has connected the local harness and the Tunnel is running before you
+   create the connector in ChatGPT.
+3. ChatGPT can reject the first **Create** attempt once even when the Tunnel is healthy, usually
+   after 5–10 seconds. Press **Create** one more time. If the second attempt also fails, stop
+   retrying and recheck the account, Tunnel ID, and running Tunnel first.
 
 If tool calls work until native Codex quota is exhausted and then edits are denied by **Automatic
 approval review**, disable that optional Codex review setting and restart Codex. The outer Codex

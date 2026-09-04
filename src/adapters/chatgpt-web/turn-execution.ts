@@ -150,6 +150,8 @@ interface ChatGptTurnRuntimeBase {
   /** Idempotently retire the turn-bound MCP capability after browser and observer settlement. */
   retireCapability?: () => void | Promise<void>;
   submission?: { phase: "prepared" | "send_activated" | "accepted" };
+  /** Present only when the visible ChatGPT tab is driven manually through the Codex Zero Risk MCP contract. */
+  manualControl?: { surfaceNonce: string };
   cancel: (reason?: Error) => void;
 }
 
@@ -276,6 +278,8 @@ export class ChatGptTurnSession {
     readonly runtime: ChatGptTurnRuntime,
     readonly traceId?: string,
     readonly ownerKey?: string,
+    readonly nativeTurnId?: string,
+    readonly nativeThreadId?: string,
   ) {
     this.attachedConversationKey = runtime.conversationKey;
     this.physicalSettlement = runtime.physicalSettlement.then(
@@ -488,6 +492,8 @@ export class ChatGptTurnSessions {
     start: () => ChatGptTurnRuntime,
     traceId?: string,
     ownerKey?: string,
+    nativeTurnId?: string,
+    nativeThreadId?: string,
   ): ChatGptTurnSession {
     this.prune();
     const existing = this.entries.get(key);
@@ -502,7 +508,7 @@ export class ChatGptTurnSessions {
       );
     }
     if (this.entries.size >= this.maxEntries) throw new Error(`ChatGPT web session registry is full (${this.maxEntries} entries)`);
-    const session = new ChatGptTurnSession(start(), traceId, ownerKey);
+    const session = new ChatGptTurnSession(start(), traceId, ownerKey, nativeTurnId, nativeThreadId);
     this.entries.set(key, session);
     const conversationKey = session.conversationKey();
     if (conversationKey) this.conversationHeads.set(conversationKey, session);
@@ -515,6 +521,8 @@ export class ChatGptTurnSessions {
     start: () => ChatGptTurnRuntime,
     traceId?: string,
     signal?: AbortSignal,
+    nativeTurnId?: string,
+    nativeThreadId?: string,
   ): Promise<ChatGptTurnSession> {
     for (;;) {
       if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
@@ -541,7 +549,7 @@ export class ChatGptTurnSessions {
         continue;
       }
       if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
-      return this.getOrCreate(key, start, traceId, ownerKey);
+      return this.getOrCreate(key, start, traceId, ownerKey, nativeTurnId, nativeThreadId);
     }
   }
 
@@ -555,6 +563,12 @@ export class ChatGptTurnSessions {
     const session = this.conversationHeads.get(conversationKey);
     session?.touch();
     return session;
+  }
+
+  /** Wait for a retained conversation epoch that has been detached but not physically released. */
+  async waitForConversationRetirement(conversationKey: string, signal?: AbortSignal): Promise<void> {
+    const pending = this.conversationRetirements.get(conversationKey);
+    if (pending) await awaitWithAbort(pending, signal);
   }
 
   async retireConversationAndWait(conversationKey: string): Promise<number> {
@@ -658,6 +672,27 @@ export class ChatGptTurnSessions {
     return true;
   }
 
+  /** Cancel only active responses whose exact native turn ids Codex marked as interrupted. */
+  retireAbortedOwnerTurns(
+    ownerKey: string,
+    abortedTurnIds: ReadonlySet<string>,
+    keepKey: string,
+  ): number {
+    const matches = [...this.entries].filter(([key, session]) => (
+      key !== keepKey
+      && session.ownerKey === ownerKey
+      && session.nativeTurnId !== undefined
+      && abortedTurnIds.has(session.nativeTurnId)
+      && session.isActive()
+    ));
+    for (const [key, session] of matches) {
+      this.entries.delete(key);
+      this.forgetConversationHead(session);
+      this.beginRetirement(key, session);
+    }
+    return matches.length;
+  }
+
   clear(): number {
     const cancelled = this.entries.size;
     for (const [key, session] of this.entries) this.beginRetirement(key, session);
@@ -672,6 +707,34 @@ export class ChatGptTurnSessions {
     for (const session of sessions) session.cancel(reason);
     await Promise.all(sessions.map(session => session.physicalSettlement));
     return sessions.length;
+  }
+
+  /**
+   * Begin retiring only the browser execution owned by the exact native Codex turn.
+   *
+   * Codex runs Interrupt hooks synchronously with a short deadline. Ownership is removed and the
+   * abort is delivered before this method returns; physical helper cleanup remains represented by
+   * `settlement`, so replacement turns still serialize behind the real teardown without blocking
+   * the hook acknowledgement itself.
+   */
+  cancelNativeTurn(
+    threadId: string,
+    turnId: string,
+    reason: Error,
+  ): { cancelled: number; settlement: Promise<void> } {
+    const matches = [...this.entries].filter(([, session]) => (
+      session.nativeThreadId === threadId
+      && session.nativeTurnId === turnId
+    ));
+    for (const [key, session] of matches) {
+      if (this.entries.get(key) !== session) continue;
+      this.entries.delete(key);
+      this.forgetConversationHead(session);
+    }
+    const settlement = Promise.all(
+      matches.map(([key, session]) => this.beginRetirement(key, session, reason)),
+    ).then(() => undefined);
+    return { cancelled: matches.length, settlement };
   }
 
   cancelledError(traceId: string): Error | undefined {
@@ -708,10 +771,11 @@ export class ChatGptTurnSessions {
     }
   }
 
-  private beginRetirement(key: string, session: ChatGptTurnSession): Promise<void> {
+  private beginRetirement(key: string, session: ChatGptTurnSession, reason?: Error): Promise<void> {
     const existing = this.retirements.get(key);
     if (existing) return existing;
-    session.cancel();
+    const conversationKey = session.conversationKey();
+    session.cancel(reason);
     const retirement = session.physicalSettlement;
     this.retirements.set(key, retirement);
     void retirement.then(() => {
@@ -728,6 +792,22 @@ export class ChatGptTurnSessions {
           this.ownerRetirements.delete(session.ownerKey!);
         }
       });
+    }
+    if (conversationKey) {
+      const previous = this.conversationRetirements.get(conversationKey);
+      const conversationRetirement = previous
+        ? Promise.all([previous, retirement]).then(() => undefined)
+        : retirement;
+      this.conversationRetirements.set(conversationKey, conversationRetirement);
+      const forgetConversationRetirement = () => {
+        if (this.conversationRetirements.get(conversationKey) === conversationRetirement) {
+          this.conversationRetirements.delete(conversationKey);
+        }
+      };
+      void conversationRetirement.then(
+        forgetConversationRetirement,
+        forgetConversationRetirement,
+      );
     }
     return retirement;
   }

@@ -185,8 +185,10 @@ test("Bigger Context uses the minimum transport and reserves three stages for co
 test("browser-only Medium directs users to the full harness", () => {
   const capabilities = { localToolsEnabled: false, solAvailable: true, proAvailable: true };
   const warning = chatGptReadOnlyContextWarning(request("medium"), capabilities);
-  expect(warning).toContain("Browser-only mode");
-  expect(warning).toContain("Full harness");
+  expect(warning).toStartWith("> **Local tools unavailable**");
+  expect(warning).toContain("`MCP`");
+  expect(warning).toContain("`Codex Web GPT`");
+  expect(warning).toContain("`Full`");
   expect(warning).toContain("selected ChatGPT Web model");
   expect(warning).not.toContain("tool-capable ChatGPT Web model first");
   expect(chatGptReadOnlyContextWarning(request("medium"), {
@@ -280,6 +282,31 @@ test("Bigger Context compaction preserves history above the retired inline byte 
   for (let index = 1; index <= 6; index += 1) {
     expect(staged).toContain(`multipart-history-${index}-`);
   }
+});
+
+test("Bigger Context minimizes the largest ordered stage instead of overfilling a middle part", () => {
+  const compact = request("high");
+  compact._compactionRequest = true;
+  compact.context.systemPrompt = ["system".repeat(1_000)];
+  compact.context.messages = [
+    ...Array.from({ length: 3 }, (_unused, index) => ({
+      role: "user" as const,
+      content: `history-${index}-${"x".repeat(100_000)}`,
+      timestamp: index + 1,
+    })),
+    { role: "user", content: "compact now", timestamp: 4 },
+  ];
+
+  const multipart = compileChatGptWebPrompt(
+    compact,
+    { localToolsEnabled: false, solAvailable: true, proAvailable: false },
+    undefined,
+    { experimentalMultipartParts: CHATGPT_BIGGER_CONTEXT_PARTS },
+  );
+  const parts = multipart.multipart!.parts.map(part => JSON.parse(part) as { records: unknown[] });
+
+  expect(parts.map(part => part.records.length)).toEqual([2, 1, 2]);
+  expect(Math.max(...multipart.multipart!.parts.map(part => part.length))).toBeLessThan(120_000);
 });
 
 test("Web compaction rebuilds attachments after trimming an oversized oldest image message", () => {

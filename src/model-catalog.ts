@@ -3,6 +3,7 @@ import type { CodexModelContextOverride } from "./codex-integration";
 import {
   availableChatGptWebModelRoutes,
   CHATGPT_WEB_MODEL_PREFIX,
+  CHATGPT_WEB_LUNA_BACKEND_MODEL,
   resolveChatGptWebContextLimits,
   type ChatGptWebModelRoute,
 } from "./chatgpt-web-models";
@@ -36,7 +37,7 @@ function shouldExposeNativeModel(value: unknown): boolean {
 function shouldHideNativeSelectorModel(value: unknown): boolean {
   const modelSlug = slug(value);
   return modelSlug !== undefined
-    && /^gpt-\d+(?:\.\d+)?-(?:luna|terra)(?:$|[-.])/i.test(modelSlug);
+    && /^(?:gpt-\d+(?:\.\d+)?-)?(?:luna|terra)(?:$|[-.])/i.test(modelSlug);
 }
 
 function reasoningLevel(template: JsonObject, effort: string, description: string): JsonObject {
@@ -83,7 +84,9 @@ function nativeTemplateCandidate(value: unknown, requireTools: boolean): value i
   // model in ChatGPT mode even when `supported_in_api` is false; that flag gates API-key mode, not
   // whether the backend row is a valid catalog template. The routed Web row overrides the flag to
   // true because this local Responses endpoint implements it.
-  if (model.visibility !== "list") return false;
+  // Picker-hidden Luna/Terra can still supply protocol metadata on a second augmentation.
+  if (model.visibility !== "list"
+    && !(model.visibility === "hide" && shouldHideNativeSelectorModel(model))) return false;
   if (!Array.isArray(model.supported_reasoning_levels)) return false;
   return !requireTools || (typeof model.tool_mode === "string" && model.tool_mode.length > 0);
 }
@@ -129,7 +132,7 @@ export function buildChatGptWebModel(
     slug: route.slug,
     display_name: route.displayName,
     description: route.description,
-    input_modalities: ["text", "image"],
+    input_modalities: route.interactionMode === "manual" ? ["text"] : ["text", "image"],
     visibility: "list",
     // These slugs are implemented by this local Responses-compatible bridge. Marking them false
     // makes Codex drop them from spawn_agent whenever openai_base_url points at the bridge.
@@ -215,7 +218,12 @@ export function augmentNativeModelCatalog(
     }
   }
   const webModels = availableChatGptWebModelRoutes(config)
-    .map(route => buildChatGptWebModel(template, route, config));
+    .map(route => {
+      const model = buildChatGptWebModel(template, route, config);
+      // Retain explicit legacy routing, but never offer Luna (including Think) in this fork's picker.
+      if (route.backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) model.visibility = "hide";
+      return model;
+    });
   return {
     ...structuredClone(catalog),
     models: [...nativeModels, ...webModels],
