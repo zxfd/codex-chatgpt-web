@@ -24,6 +24,7 @@ import {
 import {
   CHATGPT_WEB_LUNA_MODEL_ID,
   CHATGPT_WEB_MODEL_ID,
+  CHATGPT_WEB_ASTRA_MODEL_ID,
   resolveChatGptWebModelMode,
   type ChatGptWebCapabilities,
   type ChatGptWebModelMode,
@@ -59,6 +60,7 @@ import {
   parseChatGptEffortSliderState,
 } from "../../chatgpt-session";
 import { loginVerificationMarkerPath } from "../../browser-login";
+import { selectChatGptWebModelFamily, assertChatGptWebModelFamily } from "./model-family";
 import {
   connectLauncherBrowserHost,
   LauncherBrowserTurnCancelledError,
@@ -841,7 +843,7 @@ export function assertChatGptWebInputWithinLimits(
   capabilities: ChatGptWebCapabilities,
   promptChars?: number,
 ): void {
-  if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_LUNA_MODEL_ID) {
+  if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_LUNA_MODEL_ID && modelId !== CHATGPT_WEB_ASTRA_MODEL_ID) {
     throw new Error(`ChatGPT web context limit is not defined for model: ${modelId}`);
   }
   if (
@@ -904,7 +906,7 @@ export function assertChatGptWebMultipartInputWithinLimits(
       { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
     );
   }
-  if (modelId !== CHATGPT_WEB_MODEL_ID) {
+  if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_ASTRA_MODEL_ID) {
     throw new Error(`ChatGPT Bigger Context limit is not defined for model: ${modelId}`);
   }
   const { contextWindow } = resolveChatGptWebContextLimits(modelId, effort, capabilities);
@@ -971,12 +973,13 @@ export function resolveChatGptWebMultipartStagingMode(
       { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded", retryable: false },
     );
   }
-  if (modelId !== CHATGPT_WEB_MODEL_ID) {
+  if (modelId !== CHATGPT_WEB_MODEL_ID && modelId !== CHATGPT_WEB_ASTRA_MODEL_ID) {
     throw new Error(`ChatGPT Bigger Context staging mode is not defined for model: ${modelId}`);
   }
-  const efforts: readonly ChatGptWebModelMode["effort"][] = capabilities.proAvailable
-    ? ["low", "medium", "max"]
-    : ["low", "medium"];
+  // Astra is Pro-only on the Chat surface. Never stage its context using a different model.
+  const efforts: readonly ChatGptWebModelMode["effort"][] = modelId === CHATGPT_WEB_ASTRA_MODEL_ID
+    ? ["max"]
+    : capabilities.proAvailable ? ["low", "medium", "max"] : ["low", "medium"];
   const requestedContextWindow = resolveChatGptWebContextLimits(
     modelId,
     requestedEffort,
@@ -2297,6 +2300,11 @@ export class ChatGptBrowserWorker {
     } finally {
       waitAbort.abort();
     }
+    const selectedFamily = await selectChatGptWebModelFamily(page, currentEffort, modelId, captureDiagnostic);
+    const confirmFamily = async (): Promise<void> => {
+      if (selectedFamily) await assertChatGptWebModelFamily(page, currentEffort, selectedFamily);
+    };
+    if (ready !== "slider" && await effortSlider.isVisible().catch(() => false)) ready = "slider";
     if (ready === "slider") {
       let sliderState = parseChatGptEffortSliderState(
         await effortSlider.getAttribute("aria-valuemin"),
@@ -2309,7 +2317,8 @@ export class ChatGptBrowserWorker {
           { status: 502, errorType: "server_error", code: "upstream_server_error", retryable: false },
         );
       }
-      const targetValue = sliderState.min + uiEffortIndex;
+      const targetValue = selectedFamily === "astra" && sliderState.min === sliderState.max
+        ? sliderState.max : sliderState.min + uiEffortIndex;
       if (targetValue > sliderState.max) {
         throw new ChatGptWebAdapterError(
           `ChatGPT effort slider does not expose item index ${uiEffortIndex}`
@@ -2342,6 +2351,7 @@ export class ChatGptBrowserWorker {
           );
         }
       }
+      await confirmFamily();
       await captureDiagnostic?.("effort-selected");
       await page.keyboard.press("Escape");
       return mode;
@@ -2351,6 +2361,7 @@ export class ChatGptBrowserWorker {
       throw new Error(`ChatGPT effort item index ${uiEffortIndex} has no semantic checked state`);
     }
     if (selected === "true") {
+      await confirmFamily();
       await captureDiagnostic?.("effort-selected");
       await page.keyboard.press("Escape");
       return mode;
@@ -2375,6 +2386,7 @@ export class ChatGptBrowserWorker {
       }
       confirmed = await effortChoice.getAttribute("aria-checked");
       if (confirmed === "true") {
+        await confirmFamily();
         await captureDiagnostic?.("effort-selected");
         await page.keyboard.press("Escape");
         return mode;

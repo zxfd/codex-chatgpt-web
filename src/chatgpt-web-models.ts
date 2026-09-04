@@ -1,9 +1,12 @@
 export const CHATGPT_WEB_MODEL_PREFIX = "chatgpt-web/";
 export const CHATGPT_WEB_BACKEND_MODEL = "gpt-5.6-sol";
+// Internal browser route identity, not an undocumented ChatGPT HTTP API model parameter.
+export const CHATGPT_WEB_ASTRA_BACKEND_MODEL = "gpt-6-astra";
 export const CHATGPT_WEB_LUNA_BACKEND_MODEL = "gpt-5.6-luna";
 
 export type ChatGptWebBackendModel =
   | typeof CHATGPT_WEB_BACKEND_MODEL
+  | typeof CHATGPT_WEB_ASTRA_BACKEND_MODEL
   | typeof CHATGPT_WEB_LUNA_BACKEND_MODEL;
 
 export type ChatGptWebCodexEffort = "low" | "medium" | "high" | "xhigh" | "ultra";
@@ -67,12 +70,26 @@ function contextLimits(
   };
 }
 
+function assertAstraMode(
+  backendModel: ChatGptWebBackendModel,
+  effort: ChatGptWebAdapterEffort,
+  capabilities: ChatGptWebAccountCapabilities,
+): void {
+  if (backendModel !== CHATGPT_WEB_ASTRA_BACKEND_MODEL) return;
+  if (!capabilities.solAvailable || !capabilities.proAvailable || effort !== "max") {
+    throw new Error("ChatGPT GPT-6 Pro requires a Pro-capable account and the max browser effort");
+  }
+}
+
 /** Resolve the product limit for the selected visible ChatGPT mode. */
 export function resolveChatGptWebContextLimits(
   backendModel: ChatGptWebBackendModel,
   effort: ChatGptWebAdapterEffort,
   capabilities: ChatGptWebAccountCapabilities,
 ): ChatGptWebContextLimits {
+  assertAstraMode(backendModel, effort, capabilities);
+  // Astra starts with the existing conservative Pro browser budget. Its API context window is
+  // not evidence of ChatGPT's composer/transport limits; do not advertise an unmeasured increase.
   if (backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) {
     // Luna carries continuity through a private checkpoint on every completed browser turn. Codex
     // internally clamps this field to 90% of the model window, but the reported active usage is the
@@ -114,6 +131,7 @@ export function resolveChatGptWebTransportLimits(
   effort: ChatGptWebAdapterEffort,
   capabilities: ChatGptWebAccountCapabilities,
 ): ChatGptWebTransportLimits {
+  assertAstraMode(backendModel, effort, capabilities);
   if (backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) return {};
   if (!capabilities.proAvailable) {
     if (effort === "low") {
@@ -231,8 +249,8 @@ export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebModelRoute[] = [
   {
     slug: "chatgpt-web/pro",
     displayName: "ChatGPT Web — GPT-6 Pro",
-    description: "ChatGPT Pro slot through the native Codex harness; uses GPT-6 Pro (GPT-6 Astra) when the account rollout exposes it.",
-    backendModel: CHATGPT_WEB_BACKEND_MODEL,
+    description: "GPT-6 Pro (GPT-6 Astra) through ChatGPT Web. Requires the visible GPT-6 model in the account picker; never falls back to Sol Pro.",
+    backendModel: CHATGPT_WEB_ASTRA_BACKEND_MODEL,
     codexEffort: "ultra",
     adapterEffort: "max",
     requiresPro: true,
