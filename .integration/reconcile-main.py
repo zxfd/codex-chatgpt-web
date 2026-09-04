@@ -35,7 +35,11 @@ def family_order(t):
  assert t.count(needle)==1
  t=t.replace(needle,'    let activation = await activateChatGptEffortMenu(page, currentEffort);',1)
  needle='    const effortMenu = activation.menu;'
- t=t.replace(needle,block+'''    // Selecting Astra/Sol can close and rebuild the menu; reacquire its semantic controls.
+ t=t.replace(needle,'''    // Control readiness and an expired-session alert can resolve in the same event-loop turn.
+    // Recheck authoritative failures after activation, before inspecting or changing the model.
+    await throwIfChatGptSessionFailureAlert(page);
+    await throwIfChatGptRateLimitDialog(page);
+'''+block+'''    // Selecting Astra/Sol can close and rebuild the menu; reacquire its semantic controls.
     activation = await activateChatGptEffortMenu(page, currentEffort);
 '''+needle,1)
  needle='        effortChoice.waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal }).then(() => "effort" as const),'
